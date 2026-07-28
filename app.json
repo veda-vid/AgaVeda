@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "CityConnect",
+    "slug": "cityconnect",
+    "scheme": "cityconnect",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#08080E"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cityconnect.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "CityConnect uses your location to show nearby shops and services.",
+        "NSLocationAlwaysUsageDescription": "CityConnect uses your location to show nearby shops and services.",
+        "NSCameraUsageDescription": "CityConnect needs camera access to upload product photos.",
+        "NSPhotoLibraryUsageDescription": "CityConnect needs photo library access to upload product photos."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#08080E"
+      },
+      "package": "com.cityconnect.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+  "expo-router",
+  "expo-secure-store",
+  [
+    "expo-location",
+    {
+      "locationAlwaysAndWhenInUsePermission": "Allow CityConnect to use your location."
+    }
+  ],
+  [
+    "expo-image-picker",
+    {
+      "photosPermission": "Allow CityConnect to access your photos."
+    }
+  ]
+]
+  }
+}

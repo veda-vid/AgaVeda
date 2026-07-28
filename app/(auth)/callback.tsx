@@ -1,0 +1,105 @@
+// app/(auth)/callback.tsx — OAuth callback landing page
+
+import { useEffect, useState } from 'react';
+import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
+import * as Linking from 'expo-linking';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { getSupabase } from '../../lib/supabase';
+import { useAuthStore } from '../../stores/authStore';
+import { Colors } from '../../constants/theme';
+
+export default function OAuthCallbackScreen() {
+  const { role } = useLocalSearchParams<{ role?: string }>();
+  const { profile, isInitialized } = useAuthStore();
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [callbackType, setCallbackType] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initializeCallback = async () => {
+      try {
+        const supabase = getSupabase();
+
+        if (Platform.OS === 'web') {
+          const params = new URLSearchParams(window.location.search);
+          const tokenHash = params.get('token_hash');
+          const type = params.get('type');
+
+          if (tokenHash && type) {
+            setCallbackType(type);
+            await supabase.auth.verifyOtp({
+              token_hash: tokenHash,
+              type: type as any,
+            });
+          } else {
+            await supabase.auth.getSession();
+          }
+        } else {
+          const url = await Linking.getInitialURL();
+          if (!url) return;
+
+          const query = url.includes('#')
+            ? url.slice(url.indexOf('#') + 1)
+            : url.includes('?')
+              ? url.slice(url.indexOf('?') + 1)
+              : '';
+
+          const params = new URLSearchParams(query);
+          const access_token = params.get('access_token');
+          const refresh_token = params.get('refresh_token');
+          const token_hash = params.get('token_hash');
+          const type = params.get('type');
+
+          if (access_token && refresh_token) {
+            await supabase.auth.setSession({
+              access_token,
+              refresh_token,
+            });
+          } else if (token_hash && type) {
+            setCallbackType(type);
+            await supabase.auth.verifyOtp({
+              token_hash,
+              type: type as any,
+            });
+          }
+        }
+      } catch {
+        // Ignore if the callback URL has already been parsed or there is no active session.
+      } finally {
+        setReady(true);
+      }
+    };
+
+    initializeCallback();
+  }, []);
+
+  useEffect(() => {
+    if (!isInitialized || !ready) return;
+
+    if (callbackType === 'recovery') {
+      router.replace('/reset' as any);
+      return;
+    }
+
+    const destination = profile
+      ? '/'
+      : `/location${role ? `?role=${encodeURIComponent(role)}` : ''}`;
+
+    router.replace(destination as any);
+  }, [isInitialized, profile, role, ready, callbackType]);
+
+  return (
+    <View style={styles.root}>
+      <ActivityIndicator color={Colors.orange} size="large" />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.bg,
+  },
+});
