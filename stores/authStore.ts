@@ -175,12 +175,19 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   signOut: async () => {
-    await authSignOut();
-    set({
-      profile: null,
-      followedShopIds: [],
-      notifications: [],
-      dbNotifications: [],
-    });
+    // Even if Supabase signOut fails (e.g. network), we still want to clear local state
+    // so the UI/route guard immediately reflects the logged-out state.
+    try {
+      await authSignOut();
+    } catch (e) {
+      console.error('Sign out failed', e);
+    } finally {
+      set({
+        profile: null,
+        followedShopIds: [],
+        notifications: [],
+        dbNotifications: [],
+      });
+    }
   },
 }));

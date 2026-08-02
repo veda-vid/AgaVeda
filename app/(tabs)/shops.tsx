@@ -6,6 +6,7 @@ import { useCartStore } from '../../stores/cartStore';
 import { getShopsNearby, getReviews, addReview, getProductsByShop } from '../../lib/api';
 import { Colors, SHOP_CATEGORIES } from '../../constants/theme';
 import type { Shop } from '../../types';
+import { useLocalSearchParams } from 'expo-router';
 
 function ShopCard({ shop, onSelect, isBuyer }: { shop: Shop; onSelect: (s: Shop) => void; isBuyer: boolean }) {
   const { followedShopIds, toggleFollowedShop } = useAuthStore();
@@ -189,6 +190,15 @@ export default function ShopsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<Shop | null>(null);
   const isBuyer = profile?.role === 'buyer';
+
+  const { category } = useLocalSearchParams<{ category?: string }>();
+
+  useEffect(() => {
+    if (!category) return;
+    const isValid = SHOP_CATEGORIES.some(c => c.id === category);
+    if (category === 'all' || !isValid) setFilter('all');
+    else setFilter(category);
+  }, [category]);
 
   useEffect(() => {
     if (!profile) return;

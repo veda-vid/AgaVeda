@@ -2,17 +2,19 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
-  Alert, ActivityIndicator, StyleSheet,
+  Alert, ActivityIndicator, StyleSheet, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
-import { createShop, getShopByOwner, updateShop } from '../../lib/api';
+import { createShop, getShopByOwner, updateShop, updateProfile as updateUserProfile } from '../../lib/api';
+import { getSupabase, isDemoAuthEnabled } from '../../lib/supabase';
 import { Colors, SHOP_CATEGORIES } from '../../constants/theme';
 import type { ShopCategory } from '../../types';
 
 export default function SellerShopScreen() {
   const router = useRouter();
   const { profile } = useAuthStore();
+  const updateLocalProfile = useAuthStore(s => s.updateProfile);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [shopId, setShopId] = useState<string | null>(null);
@@ -22,6 +24,15 @@ export default function SellerShopScreen() {
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState(profile?.phone ?? '');
   const [whatsapp, setWhatsapp] = useState('');
+
+  const showMessage = (title: string, body: string, onOk?: () => void) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.alert(`${title}\n\n${body}`);
+      onOk?.();
+      return;
+    }
+    Alert.alert(title, body, onOk ? [{ text: 'OK', onPress: onOk }] : undefined);
+  };
 
   useEffect(() => {
     if (!profile) return;
@@ -43,10 +54,43 @@ export default function SellerShopScreen() {
 
   const save = async () => {
     if (!profile) return;
-    if (!name.trim()) { Alert.alert('Required', 'Enter your shop name'); return; }
-    if (!phone.trim()) { Alert.alert('Required', 'Enter a contact phone'); return; }
+    // Ensure Supabase session matches the current profile (required for RLS checks).
+    try {
+      if (!isDemoAuthEnabled()) {
+        const { data } = await getSupabase().auth.getSession();
+        const sessionUserId = data.session?.user?.id;
+        if (!sessionUserId) {
+          showMessage('Not authenticated', 'Supabase session is missing. Please log in again as the seller.');
+          return;
+        }
+        if (sessionUserId !== profile.id) {
+          showMessage(
+            'Auth mismatch',
+            `Supabase user id (${sessionUserId}) does not match profile id (${profile.id}). Log out and log in again.`,
+          );
+          return;
+        }
+      }
+    } catch (e: any) {
+      showMessage('Auth check failed', e?.message || 'Could not verify Supabase session.');
+      return;
+    }
+
+    // RLS requires profiles.role to be 'seller' (or super_admin) for shops INSERT.
+    if (profile.role !== 'seller' && profile.role !== 'super_admin') {
+      try {
+        await updateUserProfile(profile.id, { role: 'seller' });
+        updateLocalProfile({ role: 'seller' });
+      } catch (e: any) {
+        showMessage('Role update failed', e?.message || 'Could not switch to seller mode.');
+        return;
+      }
+    }
+
+    if (!name.trim()) { showMessage('Required', 'Enter your shop name'); return; }
+    if (!phone.trim()) { showMessage('Required', 'Enter a contact phone'); return; }
     if (profile.lat == null || profile.lng == null) {
-      Alert.alert('Location needed', 'Set your location first so customers can find you.');
+      showMessage('Location needed', 'Set your location first so customers can find you.');
       return;
     }
 
@@ -83,11 +127,14 @@ export default function SellerShopScreen() {
           is_active: true,
         });
       }
-      Alert.alert('Saved', 'Your shop is ready. You can post products, stories and reels.', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
+      showMessage(
+        'Saved',
+        'Your shop is ready. You can post products, stories and reels.',
+        () => router.back(),
+      );
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Could not save shop');
+      console.error('Save shop failed', e);
+      showMessage('Error', e?.message || 'Could not save shop');
     } finally {
       setSaving(false);
     }

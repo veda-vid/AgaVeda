@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
-  Switch, Alert, ActivityIndicator, StyleSheet,
+  Switch, Alert, ActivityIndicator, StyleSheet, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
@@ -129,9 +129,29 @@ export default function ProfileScreen() {
   };
 
   const handleSignOut = () => {
+    const doLogout = async () => {
+      setSigningOut(true);
+      try {
+        await signOut();
+        // Force navigation back into the auth flow so the user immediately
+        // sees they’re logged out (independent of auth listener timing).
+        router.replace('/(auth)/role' as any);
+      } finally {
+        setSigningOut(false);
+      }
+    };
+
+    // Expo web + React Native Alert can be unreliable; use window.confirm instead.
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const ok = window.confirm('Are you sure you want to log out?');
+      if (!ok) return;
+      void doLogout();
+      return;
+    }
+
     Alert.alert('Log Out', 'Are you sure you want to log out?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Log Out', style: 'destructive', onPress: async () => { setSigningOut(true); await signOut(); } },
+      { text: 'Log Out', style: 'destructive', onPress: () => void doLogout() },
     ]);
   };
 

@@ -7,7 +7,7 @@ import {
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
-import { createProduct, createPost, uploadImage, getShopByOwner } from '../../lib/api';
+import { createProduct, createPost, uploadImage, getShopByOwner, updateShop, updateProfile as updateUserProfile } from '../../lib/api';
 import { Colors, SHOP_CATEGORIES } from '../../constants/theme';
 
 type MediaItem = { uri: string; type: 'image' | 'video' };
@@ -15,6 +15,7 @@ type MediaItem = { uri: string; type: 'image' | 'video' };
 export default function UploadScreen() {
   const router = useRouter();
   const { profile } = useAuthStore();
+  const updateLocalProfile = useAuthStore(s => s.updateProfile);
 
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
@@ -25,10 +26,68 @@ export default function UploadScreen() {
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [uploading, setUploading] = useState(false);
 
+  const resetForm = () => {
+    setTitle('');
+    setDesc('');
+    setTags('');
+    setPrice('');
+    setDiscount('0');
+    setCategory('grocery');
+    setMediaItems([]);
+  };
+
+  const showMessage = (title: string, body: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.alert(`${title}\n\n${body}`);
+      return;
+    }
+    Alert.alert(title, body);
+  };
+
+  const slugifyTag = (t: string) => t.trim().toLowerCase().replace(/^#/, '');
+
+  const deriveCategoryFromTags = (rawTags: string): string | null => {
+    const tokens = rawTags.split(/\s+/).map(slugifyTag).filter(Boolean);
+    // Example: "#electronics" => "electronics"
+    for (const slug of tokens) {
+      const direct = (SHOP_CATEGORIES as readonly any[]).find(c =>
+        c.id === slug || c.label.toLowerCase() === slug,
+      );
+      if (direct?.id) return direct.id;
+    }
+    return null;
+  };
+
+  const getTagQuery = (rawTags: string): string | null => {
+    // Only consider the last "word" as the active hashtag token.
+    const parts = rawTags.trimEnd().split(/\s+/).filter(Boolean);
+    const last = parts[parts.length - 1] ?? '';
+    if (!last.startsWith('#')) return null;
+    return slugifyTag(last);
+  };
+
+  const tagQuery = getTagQuery(tags);
+  const tagSuggestions = tagQuery
+    ? SHOP_CATEGORIES.filter(c => c.id.includes(tagQuery) || c.label.toLowerCase().includes(tagQuery))
+    : [];
+
+  const setTagsWithAutoCategory = (next: string) => {
+    setTags(next);
+    const derived = deriveCategoryFromTags(next);
+    if (derived) setCategory(derived);
+  };
+
+  const applyHashtagSuggestion = (catId: string) => {
+    const parts = tags.trimEnd().split(/\s+/).filter(Boolean);
+    if (parts.length && parts[parts.length - 1].startsWith('#')) parts.pop();
+    const updated = [...parts, `#${catId}`].join(' ');
+    setTagsWithAutoCategory(updated);
+  };
+
   const pickMedia = async () => {
     if (Platform.OS !== 'web') {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo access in Settings'); return; }
+      if (status !== 'granted') { showMessage('Permission needed', 'Allow photo access in Settings'); return; }
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.All,
@@ -47,20 +106,39 @@ export default function UploadScreen() {
   const removeMedia = (idx: number) => setMediaItems(prev => prev.filter((_, i) => i !== idx));
 
   const handlePost = async () => {
-    if (!title.trim()) { Alert.alert('Required', 'Enter a product name'); return; }
-    if (!price.trim()) { Alert.alert('Required', 'Enter a price'); return; }
-    if (!profile) { Alert.alert('Error', 'Not logged in'); return; }
+    if (!title.trim()) { showMessage('Required', 'Enter a product name'); return; }
+    if (!price.trim()) { showMessage('Required', 'Enter a price'); return; }
+    if (!profile) { showMessage('Error', 'Not logged in'); return; }
 
     setUploading(true);
     try {
+      // RLS requires profiles.role to be 'seller' (or super_admin) for shops INSERT.
+      if (profile.role !== 'seller' && profile.role !== 'super_admin') {
+        try {
+          await updateUserProfile(profile.id, { role: 'seller' });
+          updateLocalProfile({ role: 'seller' });
+        } catch (e: any) {
+          showMessage('Role update failed', e?.message || 'Could not switch to seller mode.');
+          setUploading(false);
+          return;
+        }
+      }
+
       const myShop = await getShopByOwner(profile.id);
       if (!myShop) {
-        Alert.alert('No shop found', 'Create your shop first before posting products.', [
-          { text: 'Create Shop', onPress: () => router.push('/seller/shop' as any) },
-          { text: 'Cancel', style: 'cancel' },
-        ]);
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          const ok = window.confirm('No shop found.\n\nCreate your shop first before posting products.');
+          if (ok) router.push('/seller/shop' as any);
+        } else {
+          Alert.alert('No shop found', 'Create your shop first before posting products.', [
+            { text: 'Create Shop', onPress: () => router.push('/seller/shop' as any) },
+            { text: 'Cancel', style: 'cancel' },
+          ]);
+        }
         setUploading(false); return;
       }
+
+      const derivedShopCategory = deriveCategoryFromTags(tags);
 
       const uploadedUrls: string[] = [];
       for (let i = 0; i < mediaItems.length; i++) {
@@ -87,6 +165,14 @@ export default function UploadScreen() {
       });
 
       const captionText = [desc.trim() || title.trim(), tags.trim() ? tags.trim().split(/\s+/).map(t => t.startsWith('#') ? t : `#${t}`).join(' ') : ''].filter(Boolean).join('\n');
+
+      // If the user tagged a category (e.g. #electronics), align both:
+      // - product.category (used by your DB schema)
+      // - shop.category (used by the "Electronics" shops section)
+      if (derivedShopCategory && myShop.category !== derivedShopCategory) {
+        await updateShop(myShop.id, { category: derivedShopCategory } as any);
+      }
+
       await createPost({
         shop_id: myShop.id,
         product_id: product.id,
@@ -95,11 +181,31 @@ export default function UploadScreen() {
         media_type: mediaItems[0]?.type ?? 'image',
       });
 
-      Alert.alert('🎉 Posted!', 'Your product is now live on the feed.', [
-        { text: 'OK', onPress: () => router.replace('/(tabs)/') },
-      ]);
+      // Success UX: let the seller either upload another item or go back home.
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('🎉 Posted! Your product is now live on the feed.');
+        const uploadAnother = window.confirm('Upload another product?\n\nOK = Upload another\nCancel = Go to Home');
+        if (uploadAnother) resetForm();
+        else {
+          // Take them straight to the relevant Shops section if we detected a category tag.
+          router.replace(
+            derivedShopCategory
+              ? ({ pathname: '/(tabs)/shops', params: { category: derivedShopCategory } } as any)
+              : ('/(tabs)/' as any),
+          );
+        }
+      } else {
+        const toGoHome = derivedShopCategory
+          ? () => router.replace({ pathname: '/(tabs)/shops', params: { category: derivedShopCategory } } as any)
+          : () => router.replace('/(tabs)/' as any);
+
+        Alert.alert('🎉 Posted!', 'Your product is now live on the feed.', [
+          { text: 'Upload Another', onPress: () => resetForm() },
+          { text: 'Go to Home', onPress: toGoHome },
+        ]);
+      }
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to post product');
+      showMessage('Error', e?.message || 'Failed to post product');
     } finally { setUploading(false); }
   };
 
@@ -160,8 +266,35 @@ export default function UploadScreen() {
 
         <Text style={s.label}>TAGS</Text>
         <View style={s.inputWrap}>
-          <TextInput style={s.input} value={tags} onChangeText={setTags} placeholder="fresh organic deals" placeholderTextColor={Colors.dim} />
+          <TextInput
+            style={s.input}
+            value={tags}
+            onChangeText={setTagsWithAutoCategory}
+            placeholder="fresh organic deals (try: #electronics)"
+            placeholderTextColor={Colors.dim}
+          />
         </View>
+
+        {tagSuggestions.length > 0 && (
+          <View style={{ marginTop: -10, marginBottom: 14 }}>
+            <Text style={{ color: Colors.sub, fontSize: 11, fontWeight: '700', marginBottom: 8 }}>
+              Tag suggestions
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {tagSuggestions.slice(0, 6).map(c => (
+                <TouchableOpacity
+                  key={c.id}
+                  onPress={() => applyHashtagSuggestion(c.id)}
+                  style={[s.tagChip, { backgroundColor: category === c.id ? Colors.orange + '22' : Colors.card }]}
+                >
+                  <Text style={[s.tagChipText, category === c.id ? { color: Colors.orange } : null]}>
+                    #{c.id}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
 
         <View style={{ flexDirection: 'row', gap: 12 }}>
           <View style={{ flex: 1 }}>
@@ -242,4 +375,7 @@ const s = StyleSheet.create({
   previewPriceText: { color: Colors.amber, fontWeight: '700', fontSize: 14 },
   previewInfo: { padding: 14 },
   previewName: { fontSize: 16, fontWeight: '700', color: Colors.text, marginBottom: 4 },
-  previewDesc: { fontSize: 13, color: Colors.sub },});
+  previewDesc: { fontSize: 13, color: Colors.sub },
+  tagChip: { borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: Colors.border2, alignItems: 'center' },
+  tagChipText: { color: Colors.text, fontWeight: '700', fontSize: 12 },
+});
