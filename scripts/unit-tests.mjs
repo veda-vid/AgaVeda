@@ -130,3 +130,41 @@ describe('buyer vs seller capabilities', () => {
     assert.equal(buyerCaps.upload, false);
   });
 });
+
+describe('auth rate limit parsing', () => {
+  function parseRateLimitWaitMs(message) {
+    const msg = String(message || '').toLowerCase();
+    if (!msg.includes('rate limit') && !msg.includes('too many') && !msg.includes('throttl')) return null;
+
+    const minutes = msg.match(/(\d+)\s*(minute|min|mins|minutes)\b/i)?.[1];
+    if (minutes) return Number(minutes) * 60 * 1000;
+
+    const hours = msg.match(/(\d+)\s*(hour|hours|hr|hrs)\b/i)?.[1];
+    if (hours) return Number(hours) * 60 * 60 * 1000;
+
+    const seconds = msg.match(/(\d+)\s*(second|seconds|sec|secs)\b/i)?.[1];
+    if (seconds) return Number(seconds) * 1000;
+
+    return 2 * 60 * 1000;
+  }
+
+  it('parses minutes from supabase-like message', () => {
+    const ms = parseRateLimitWaitMs('email rate limit exceeded, try again in 120 minutes');
+    assert.equal(ms, 120 * 60 * 1000);
+  });
+
+  it('parses hours from throttling message', () => {
+    const ms = parseRateLimitWaitMs('too many requests, please wait 2 hours');
+    assert.equal(ms, 2 * 60 * 60 * 1000);
+  });
+
+  it('parses seconds from throttling message', () => {
+    const ms = parseRateLimitWaitMs('rate limit exceeded, try again in 45 seconds');
+    assert.equal(ms, 45 * 1000);
+  });
+
+  it('returns null when message is unrelated', () => {
+    const ms = parseRateLimitWaitMs('some other error');
+    assert.equal(ms, null);
+  });
+});

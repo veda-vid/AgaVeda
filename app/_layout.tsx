@@ -1,7 +1,7 @@
 // app/_layout.tsx — Root layout with auth guard (no redirect loops)
 
 import { useEffect, useRef } from 'react';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, usePathname, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -13,10 +13,11 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const profile = useAuthStore(s => s.profile);
   const isInitialized = useAuthStore(s => s.isInitialized);
   const segments = useSegments();
+  const pathname = usePathname();
   const router = useRouter();
   const lastNav = useRef<string>('');
 
-  const isCallbackRoute = (segments as string[]).includes('callback');
+  const isCallbackRoute = (segments as string[]).includes('callback') || (pathname ?? '').endsWith('/callback');
   const inAuthRoutes =
     (segments as string[]).includes('splash') ||
     (segments as string[]).includes('role') ||

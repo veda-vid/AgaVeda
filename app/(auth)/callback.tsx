@@ -22,7 +22,9 @@ export default function OAuthCallbackScreen() {
 
         if (Platform.OS === 'web') {
           const params = new URLSearchParams(window.location.search);
-          const tokenHash = params.get('token_hash');
+          // Supabase recovery links can use either `token_hash` or `token`
+          // depending on the OAuth/PKCE path.
+          const tokenHash = params.get('token_hash') ?? params.get('token');
           const type = params.get('type');
 
           if (tokenHash && type) {
@@ -31,6 +33,13 @@ export default function OAuthCallbackScreen() {
               token_hash: tokenHash,
               type: type as any,
             });
+
+            // IMPORTANT: password recovery should always land on /reset,
+            // independently of authStore initialization timing.
+            if (type === 'recovery') {
+              router.replace('/reset' as any);
+              return;
+            }
           } else {
             await supabase.auth.getSession();
           }
@@ -61,6 +70,11 @@ export default function OAuthCallbackScreen() {
               token_hash,
               type: type as any,
             });
+
+            if (type === 'recovery') {
+              router.replace('/reset' as any);
+              return;
+            }
           }
         }
       } catch {

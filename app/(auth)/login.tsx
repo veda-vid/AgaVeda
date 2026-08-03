@@ -1,5 +1,5 @@
 // app/(auth)/login.tsx — Instagram-simple login / signup / forgot password
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Platform, View, Text, TextInput, TouchableOpacity, ScrollView,
   ActivityIndicator, Alert, StyleSheet, KeyboardAvoidingView,
@@ -40,6 +40,39 @@ export default function LoginScreen() {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [forgotCooldownUntil, setForgotCooldownUntil] = useState<number>(0);
+
+  useEffect(() => {
+    if (mode !== 'forgot') return;
+    if (!forgotCooldownUntil) return;
+    const remaining = forgotCooldownUntil - Date.now();
+    if (remaining <= 0) {
+      setForgotCooldownUntil(0);
+      return;
+    }
+    const t = setTimeout(() => setForgotCooldownUntil(0), remaining);
+    return () => clearTimeout(t);
+  }, [forgotCooldownUntil, mode]);
+
+  const parseRateLimitWaitMs = (message: string): number | null => {
+    const msg = String(message || '').toLowerCase();
+    // Common Supabase message patterns include:
+    // - "email rate limit exceeded, try again in 120 minutes"
+    // - "too many requests, please wait 2 hours"
+    if (!msg.includes('rate limit') && !msg.includes('too many') && !msg.includes('throttl')) return null;
+
+    const minutes = msg.match(/(\d+)\s*(minute|min|mins|minutes)\b/i)?.[1];
+    if (minutes) return Number(minutes) * 60 * 1000;
+
+    const hours = msg.match(/(\d+)\s*(hour|hours|hr|hrs)\b/i)?.[1];
+    if (hours) return Number(hours) * 60 * 60 * 1000;
+
+    const seconds = msg.match(/(\d+)\s*(second|seconds|sec|secs)\b/i)?.[1];
+    if (seconds) return Number(seconds) * 1000;
+
+    // Fallback for "rate limit exceeded" without explicit duration
+    return 2 * 60 * 1000; // 2 minutes
+  };
 
   // Shared fields (Instagram-style: one form)
   const [email, setEmail] = useState('');
@@ -145,6 +178,14 @@ export default function LoginScreen() {
       setError('Enter the email linked to your account.');
       return;
     }
+
+    const now = Date.now();
+    if (now < forgotCooldownUntil) {
+      const secs = Math.ceil((forgotCooldownUntil - now) / 1000);
+      setError(`Email rate limit exceeded. Please wait ${secs} seconds and try again.`);
+      return;
+    }
+
     setLoading(true);
     try {
       const { error: err } = await sendPasswordResetEmail(mail);
@@ -157,7 +198,17 @@ export default function LoginScreen() {
       }
       setMode('signin');
     } catch (e: any) {
-      setError(friendlyAuthNetworkError(e));
+      const msg = friendlyAuthNetworkError(e);
+      const cooldownMs = parseRateLimitWaitMs(String(msg));
+      if (cooldownMs) {
+        setForgotCooldownUntil(Date.now() + cooldownMs);
+        const secs = Math.ceil(cooldownMs / 1000);
+        const mins = Math.ceil(secs / 60);
+        const label = mins >= 60 ? `${Math.ceil(mins / 60)} hour(s)` : `${mins} minute(s)`;
+        setError(`Email rate limit exceeded. Please wait ${label} and try again.`);
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -284,7 +335,7 @@ export default function LoginScreen() {
           <TouchableOpacity
             style={[s.primaryBtn, loading && s.primaryBtnDisabled]}
             onPress={primaryAction}
-            disabled={loading}
+            disabled={loading || (mode === 'forgot' && Date.now() < forgotCooldownUntil)}
             activeOpacity={0.85}
           >
             {loading
