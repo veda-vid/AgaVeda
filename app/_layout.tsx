@@ -17,7 +17,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const lastNav = useRef<string>('');
 
-  const isCallbackRoute = (segments as string[]).includes('callback') || (pathname ?? '').endsWith('/callback');
+  const isCallbackRoute =
+    (segments as string[]).includes('callback')
+    || (pathname ?? '').includes('/callback')
+    || (pathname ?? '').endsWith('callback');
   const inAuthRoutes =
     (segments as string[]).includes('splash') ||
     (segments as string[]).includes('role') ||

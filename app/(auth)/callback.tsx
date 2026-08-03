@@ -29,10 +29,15 @@ export default function OAuthCallbackScreen() {
 
           if (tokenHash && type) {
             setCallbackType(type);
-            await supabase.auth.verifyOtp({
-              token_hash: tokenHash,
-              type: type as any,
-            });
+            try {
+              await supabase.auth.verifyOtp({
+                token_hash: tokenHash,
+                type: type as any,
+              });
+            } catch {
+              // Even if verification fails, we still route to /reset for recovery UX.
+              // The /reset screen will handle session-related errors if needed.
+            }
 
             // IMPORTANT: password recovery should always land on /reset,
             // independently of authStore initialization timing.
@@ -66,10 +71,14 @@ export default function OAuthCallbackScreen() {
             });
           } else if (token_hash && type) {
             setCallbackType(type);
-            await supabase.auth.verifyOtp({
-              token_hash,
-              type: type as any,
-            });
+            try {
+              await supabase.auth.verifyOtp({
+                token_hash,
+                type: type as any,
+              });
+            } catch {
+              // Route to /reset regardless for recovery UX.
+            }
 
             if (type === 'recovery') {
               router.replace('/reset' as any);
