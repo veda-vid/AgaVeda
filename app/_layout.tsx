@@ -40,7 +40,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     if (!profile && !inAuthRoutes) {
       target = '/splash';
     } else if (profile && needsLocation && authScreen !== 'location') {
-      target = `/location?role=${profile.role}`;
+      // Don't interrupt password recovery with onboarding location redirects.
+      if (authScreen !== 'reset') {
+        target = `/location?role=${profile.role}`;
+      }
     } else if (profile && !needsLocation && inAuthRoutes && authScreen !== 'callback' && authScreen !== 'reset') {
       // Completed onboarding — enter main app tabs
       target = '/(tabs)';

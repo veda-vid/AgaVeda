@@ -29,14 +29,22 @@ export default function OAuthCallbackScreen() {
 
           if (tokenHash && type) {
             setCallbackType(type);
-            try {
-              await supabase.auth.verifyOtp({
-                token_hash: tokenHash,
-                type: type as any,
-              });
-            } catch {
-              // Even if verification fails, we still route to /reset for recovery UX.
-              // The /reset screen will handle session-related errors if needed.
+            // Password recovery links can arrive as OTP-style (`token_hash`)
+            // or as OAuth/PKCE-style (`token=pkce_...`).
+            // If it looks like PKCE, let Supabase parse the session from the URL
+            // instead of calling verifyOtp (which would error with "email_link invalid/expired").
+            if (type === 'recovery' && tokenHash.startsWith('pkce_')) {
+              try { await supabase.auth.getSession(); } catch {}
+            } else {
+              try {
+                await supabase.auth.verifyOtp({
+                  token_hash: tokenHash,
+                  type: type as any,
+                });
+              } catch {
+                // We'll still route to /reset for recovery UX.
+                // If the session isn't established, /reset will show a clearer error.
+              }
             }
 
             // IMPORTANT: password recovery should always land on /reset,
