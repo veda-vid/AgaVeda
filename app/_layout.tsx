@@ -39,8 +39,9 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     let target: string | null = null;
     if (!profile && !inAuthRoutes) {
       target = '/splash';
-    } else if (profile && needsLocation && authScreen !== 'location') {
-      // Don't interrupt password recovery with onboarding location redirects.
+    } else if (profile && needsLocation && inAuthRoutes && authScreen !== 'location') {
+      // Only enforce location while the user is already in onboarding.
+      // A hard refresh inside the app must preserve the current page.
       if (authScreen !== 'reset') {
         target = `/location?role=${profile.role}`;
       }

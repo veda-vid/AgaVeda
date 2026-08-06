@@ -2,21 +2,64 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
-  Image, ActivityIndicator, RefreshControl, StyleSheet, Dimensions, Modal, Pressable, Alert,
+  Image, ActivityIndicator, RefreshControl, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
 import { useCartStore } from '../../stores/cartStore';
 import {
   getFeed, getFollowingFeed, likePost, unlikePost, savePost, unsavePost,
   getComments, addComment, getStories, createStory, getReels, createReel,
-  globalSearch, getShopByOwner, uploadImage,
+  globalSearch, getShopByOwner, uploadImage, createPost,
 } from '../../lib/api';
 import { Colors } from '../../constants/theme';
 import type { Story, Reel, SearchResult } from '../../types';
 
 const W = Dimensions.get('window').width;
+
+const TEXT_CARD_BACKGROUNDS = [
+  { id: 'sunset', color: '#E94F37' },
+  { id: 'berry', color: '#7B2CBF' },
+  { id: 'ocean', color: '#146C94' },
+  { id: 'midnight', color: '#172554' },
+  { id: 'forest', color: '#146B55' },
+  { id: 'rose', color: '#BE185D' },
+  { id: 'amber', color: '#C2410C' },
+  { id: 'slate', color: '#334155' },
+] as const;
+
+const TEXT_CARD_COLORS = [
+  { id: 'white', color: '#FFFFFF' },
+  { id: 'ink', color: '#111827' },
+  { id: 'sun', color: '#FDE047' },
+  { id: 'mint', color: '#A7F3D0' },
+  { id: 'blush', color: '#FBCFE8' },
+] as const;
+
+const TEXT_FONT_STYLES = {
+  classic: { fontSize: 24, fontWeight: '600' },
+  bold: { fontSize: 28, fontWeight: '900' },
+  elegant: { fontSize: 26, fontFamily: 'serif', fontStyle: 'italic' },
+  typewriter: { fontSize: 22, fontFamily: 'monospace', fontWeight: '700' },
+} as const;
+
+type TextFontStyle = keyof typeof TEXT_FONT_STYLES;
+type TextBackground = typeof TEXT_CARD_BACKGROUNDS[number]['id'];
+type TextColor = typeof TEXT_CARD_COLORS[number]['id'];
+
+function getTextBackground(id?: string) {
+  return TEXT_CARD_BACKGROUNDS.find(option => option.id === id)?.color ?? TEXT_CARD_BACKGROUNDS[0].color;
+}
+
+function getTextColor(id?: string) {
+  return TEXT_CARD_COLORS.find(option => option.id === id)?.color ?? TEXT_CARD_COLORS[0].color;
+}
+
+function getTextFontStyle(id?: string) {
+  if (id && id in TEXT_FONT_STYLES) return TEXT_FONT_STYLES[id as TextFontStyle];
+  return id === 'headline' ? TEXT_FONT_STYLES.bold : TEXT_FONT_STYLES.classic;
+}
 
 function PostCard({
   post, userId, isBuyer, onAddToCart,
@@ -89,10 +132,42 @@ function PostCard({
       </View>
 
       <View style={pf.media}>
-        {post.media_urls?.length > 0
-          ? <Image source={{ uri: post.media_urls[0] }} style={pf.image} resizeMode="cover" />
-          : <View style={pf.imagePlaceholder}><Text style={{ fontSize: 60 }}>🏪</Text></View>}
-        {post.media_type === 'video' && (
+        {(() => {
+          let textCard: {
+            text: string;
+            style?: string;
+            fontStyle?: string;
+            background?: string;
+            textColor?: string;
+          } | null = null;
+          if (typeof post.caption === 'string' && post.caption.startsWith('__TEXT_CARD__')) {
+            try {
+              textCard = JSON.parse(post.caption.slice('__TEXT_CARD__'.length));
+            } catch {
+              textCard = null;
+            }
+          }
+          if (textCard) {
+            return (
+              <View style={[pf.textCard, { backgroundColor: getTextBackground(textCard.background) }]}>
+                <Text
+                  style={[
+                    pf.textCardText,
+                    getTextFontStyle(textCard.fontStyle ?? textCard.style),
+                    { color: getTextColor(textCard.textColor) },
+                  ]}
+                >
+                  {textCard.text}
+                </Text>
+              </View>
+            );
+          }
+          if (post.media_urls?.length > 0) {
+            return <Image source={{ uri: post.media_urls[0] }} style={pf.image} resizeMode="cover" />;
+          }
+          return <View style={pf.imagePlaceholder}><Text style={{ fontSize: 60 }}>🏪</Text></View>;
+        })()}
+        {post.media_type === 'video' && post.media_urls?.length > 0 && (
           <View style={pf.videoBadge}><Text style={pf.videoBadgeText}>▶</Text></View>
         )}
       </View>
@@ -122,7 +197,15 @@ function PostCard({
       {!post.is_ad && (
         <View style={pf.caption}>
           <Text style={pf.likesText}>{likes} likes</Text>
-          <Text style={pf.captionText}><Text style={pf.shopNameInline}>{post.shop_name}</Text> {post.caption}</Text>
+          {typeof post.caption === 'string' && post.caption.startsWith('__TEXT_CARD__') ? (
+            <Text style={pf.captionText}>
+              <Text style={pf.shopNameInline}>{post.shop_name}</Text> shared an update
+            </Text>
+          ) : (
+            <Text style={pf.captionText}>
+              <Text style={pf.shopNameInline}>{post.shop_name}</Text> {post.caption}
+            </Text>
+          )}
           {post.total_comments > 0 && !showComments && (
             <TouchableOpacity onPress={openComments}>
               <Text style={pf.viewComments}>View all {post.total_comments} comments</Text>
@@ -162,6 +245,7 @@ function PostCard({
 
 export default function FeedScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ create_menu?: string }>();
   const profile = useAuthStore(s => s.profile);
   const followedShopIds = useAuthStore(s => s.followedShopIds);
   const notifications = useAuthStore(s => s.notifications);
@@ -183,6 +267,8 @@ export default function FeedScreen() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showStoryComposer, setShowStoryComposer] = useState(false);
   const [showReelComposer, setShowReelComposer] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  const [showTextPostComposer, setShowTextPostComposer] = useState(false);
   const [storyDraft, setStoryDraft] = useState('');
   const [reelDraft, setReelDraft] = useState('');
   const [reelTags, setReelTags] = useState('');
@@ -192,6 +278,11 @@ export default function FeedScreen() {
   const [reels, setReels] = useState<Reel[]>([]);
   const [posting, setPosting] = useState(false);
   const [viewStory, setViewStory] = useState<Story | null>(null);
+  const [textPostDraft, setTextPostDraft] = useState('');
+  const [textFontStyle, setTextFontStyle] = useState<TextFontStyle>('classic');
+  const [textBackground, setTextBackground] = useState<TextBackground>('sunset');
+  const [textColor, setTextColor] = useState<TextColor>('white');
+  const [hasShop, setHasShop] = useState<boolean | null>(null);
 
   const pageRef = useRef(0);
   const loadingRef = useRef(false);
@@ -271,6 +362,33 @@ export default function FeedScreen() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
+
+  // When coming from the bottom-center "+" tab, open the seller create menu.
+  useEffect(() => {
+    const shouldOpen = String(params.create_menu ?? '') === '1';
+    if (shouldOpen && isSeller) {
+      setShowCreateMenu(true);
+      // Clean up the URL so manual hard refresh stays on the plain home feed.
+      router.replace('/(tabs)' as any);
+    }
+  }, [params.create_menu, isSeller, router]);
+
+  // For sellers, detect if they already have a shop so we can highlight the "New shop" option once.
+  useEffect(() => {
+    if (!profile || !isSeller) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const shop = await getShopByOwner(profile.id);
+        if (!cancelled) setHasShop(!!shop);
+      } catch {
+        if (!cancelled) setHasShop(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, isSeller]);
 
   // Set following mode once after follows load — avoid toggling forever
   useEffect(() => {
@@ -422,6 +540,42 @@ export default function FeedScreen() {
     }
   };
 
+  const submitTextPost = async () => {
+    if (!textPostDraft.trim()) {
+      Alert.alert('Add a short update', 'Write something about your shop before posting.');
+      return;
+    }
+    setPosting(true);
+    try {
+      const shop = await resolveMyShop();
+      if (!shop) return;
+      const meta = {
+        text: textPostDraft.trim(),
+        fontStyle: textFontStyle,
+        background: textBackground,
+        textColor,
+      };
+      await createPost({
+        shop_id: shop.id,
+        caption: `__TEXT_CARD__${JSON.stringify(meta)}`,
+        media_urls: [],
+        media_type: 'image',
+      });
+      setTextPostDraft('');
+      setTextFontStyle('classic');
+      setTextBackground('sunset');
+      setTextColor('white');
+      setShowTextPostComposer(false);
+      addNotification('Update shared from your shop.');
+      // Reload nearby feed so the new update appears with proper distance + shop fields.
+      load(true);
+    } catch (e: any) {
+      Alert.alert('Could not share update', e.message || 'Try again after running the social migration SQL.');
+    } finally {
+      setPosting(false);
+    }
+  };
+
   const handleAddToCart = async (productId: string, shopId: string) => {
     if (!profile) return;
     try {
@@ -432,6 +586,14 @@ export default function FeedScreen() {
       Alert.alert('Cart', e.message || 'Could not add — ensure cart migration is applied.');
     }
   };
+
+  if (!profile) {
+    return (
+      <View style={ff.loader}>
+        <ActivityIndicator color={Colors.orange} size="large" />
+      </View>
+    );
+  }
 
   if (loading) {
     return (
@@ -456,7 +618,7 @@ export default function FeedScreen() {
           {isSeller && (
             <>
               <TouchableOpacity onPress={() => router.push('/seller/shop' as any)}><Text style={ff.icon}>🏪</Text></TouchableOpacity>
-              <TouchableOpacity onPress={() => setShowReelComposer(true)}><Text style={ff.icon}>🎬</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowCreateMenu(true)}><Text style={ff.icon}>➕</Text></TouchableOpacity>
             </>
           )}
         </View>
@@ -598,6 +760,85 @@ export default function FeedScreen() {
         </Pressable>
       </Modal>
 
+      {/* Seller create menu */}
+      <Modal transparent visible={showCreateMenu} animationType="fade" onRequestClose={() => setShowCreateMenu(false)}>
+        <Pressable style={ff.modalBackdrop} onPress={() => setShowCreateMenu(false)}>
+          <View style={ff.modalSheet}>
+            <View style={ff.modalHandle} />
+            <Text style={ff.modalTitle}>Share from your shop</Text>
+            <TouchableOpacity
+              style={[ff.createRow, hasShop === false && ff.createRowHighlight]}
+              onPress={() => {
+                setShowCreateMenu(false);
+                router.push('/seller/shop' as any);
+              }}
+            >
+              <Text style={ff.createIcon}>🏪</Text>
+              <View style={ff.createTextWrap}>
+                <Text style={ff.createTitle}>{hasShop ? 'Your shop profile' : 'Create your shop'}</Text>
+                <Text style={ff.createSub}>
+                  {hasShop
+                    ? 'Update shop details, address and contact.'
+                    : 'Start by setting up your shop so buyers can find you.'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={ff.createRow}
+              onPress={() => {
+                setShowCreateMenu(false);
+                router.push('/seller/upload' as any);
+              }}
+            >
+              <Text style={ff.createIcon}>📦</Text>
+              <View style={ff.createTextWrap}>
+                <Text style={ff.createTitle}>Product card</Text>
+                <Text style={ff.createSub}>Add an item to your catalog and home feed.</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={ff.createRow}
+              onPress={() => {
+                setShowCreateMenu(false);
+                setShowStoryComposer(true);
+              }}
+            >
+              <Text style={ff.createIcon}>✨</Text>
+              <View style={ff.createTextWrap}>
+                <Text style={ff.createTitle}>Story bubble</Text>
+                <Text style={ff.createSub}>A 24‑hour highlight with photo or text.</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={ff.createRow}
+              onPress={() => {
+                setShowCreateMenu(false);
+                setShowReelComposer(true);
+              }}
+            >
+              <Text style={ff.createIcon}>🎬</Text>
+              <View style={ff.createTextWrap}>
+                <Text style={ff.createTitle}>Quick clip</Text>
+                <Text style={ff.createSub}>Short vertical video from your shop.</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={ff.createRow}
+              onPress={() => {
+                setShowCreateMenu(false);
+                setShowTextPostComposer(true);
+              }}
+            >
+              <Text style={ff.createIcon}>✏️</Text>
+              <View style={ff.createTextWrap}>
+                <Text style={ff.createTitle}>Text update</Text>
+                <Text style={ff.createSub}>Share news, offers or reminders without photos.</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
+
       <Modal transparent visible={!!viewStory} animationType="fade" onRequestClose={() => setViewStory(null)}>
         <Pressable style={ff.storyViewer} onPress={() => setViewStory(null)}>
           {viewStory && (
@@ -661,6 +902,90 @@ export default function FeedScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Text-only shop update */}
+      <Modal transparent visible={showTextPostComposer} animationType="slide" onRequestClose={() => setShowTextPostComposer(false)}>
+        <View style={ff.modalBackdrop}>
+          <View style={ff.modalSheet}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <View style={ff.modalHandle} />
+              <Text style={ff.modalTitle}>Share shop update</Text>
+              <View style={[ff.textCardPreview, { backgroundColor: getTextBackground(textBackground) }]}>
+                <TextInput
+                  value={textPostDraft}
+                  onChangeText={setTextPostDraft}
+                  multiline
+                  maxLength={280}
+                  placeholder="What’s new?"
+                  placeholderTextColor={`${getTextColor(textColor)}99`}
+                  style={[
+                    ff.textCardInput,
+                    getTextFontStyle(textFontStyle),
+                    { color: getTextColor(textColor) },
+                  ]}
+                />
+                <Text style={[ff.textCount, { color: getTextColor(textColor) }]}>{textPostDraft.length}/280</Text>
+              </View>
+
+              <Text style={ff.textOptionLabel}>BACKGROUND</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ff.colorOptionRow}>
+                {TEXT_CARD_BACKGROUNDS.map(option => (
+                  <TouchableOpacity
+                    key={option.id}
+                    accessibilityLabel={`${option.id} background`}
+                    onPress={() => setTextBackground(option.id)}
+                    style={[
+                      ff.backgroundSwatch,
+                      { backgroundColor: option.color },
+                      textBackground === option.id && ff.optionSelected,
+                    ]}
+                  >
+                    {textBackground === option.id && <Text style={ff.swatchCheck}>✓</Text>}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              <Text style={ff.textOptionLabel}>FONT STYLE</Text>
+              <View style={ff.textStyleRow}>
+                {([
+                  ['classic', 'Aa', 'Classic'],
+                  ['bold', 'B', 'Bold'],
+                  ['elegant', 'Ag', 'Elegant'],
+                  ['typewriter', 'Tt', 'Type'],
+                ] as const).map(([id, sample, label]) => (
+                  <TouchableOpacity
+                    key={id}
+                    style={[ff.textStyleChip, textFontStyle === id && ff.textStyleChipActive]}
+                    onPress={() => setTextFontStyle(id)}
+                  >
+                    <Text style={[ff.fontSample, getTextFontStyle(id)]}>{sample}</Text>
+                    <Text style={ff.textStyleChipText}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={ff.textOptionLabel}>FONT COLOR</Text>
+              <View style={ff.colorOptionRow}>
+                {TEXT_CARD_COLORS.map(option => (
+                  <TouchableOpacity
+                    key={option.id}
+                    accessibilityLabel={`${option.id} font color`}
+                    onPress={() => setTextColor(option.id)}
+                    style={[
+                      ff.fontColorSwatch,
+                      { backgroundColor: option.color },
+                      textColor === option.id && ff.optionSelected,
+                    ]}
+                  />
+                ))}
+              </View>
+              <TouchableOpacity onPress={submitTextPost} style={ff.primaryBtn} disabled={posting}>
+                {posting ? <ActivityIndicator color="#fff" /> : <Text style={ff.primaryBtnText}>Post update</Text>}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -716,7 +1041,55 @@ const ff = StyleSheet.create({
   modalEmpty: { color: Colors.sub, paddingVertical: 8 },
   noticeItem: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border },
   noticeItemText: { color: Colors.text, fontSize: 13 },
+  createRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10 },
+  createIcon: { fontSize: 22 },
+  createTextWrap: { flex: 1 },
+  createTitle: { color: Colors.text, fontSize: 14, fontWeight: '700' },
+  createSub: { color: Colors.sub, fontSize: 12, marginTop: 2 },
+  createRowHighlight: { backgroundColor: Colors.orange + '20', borderRadius: 12, paddingHorizontal: 4 },
   modalInput: { backgroundColor: Colors.card, borderRadius: 12, padding: 12, color: Colors.text, minHeight: 80, marginBottom: 12, textAlignVertical: 'top' },
+  textStyleRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  textStyleChip: {
+    flex: 1,
+    backgroundColor: Colors.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  textStyleChipActive: { borderColor: Colors.orange, backgroundColor: Colors.orange + '22' },
+  textStyleChipText: { color: Colors.sub, fontSize: 11, fontWeight: '700' },
+  textCardPreview: {
+    minHeight: 220,
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  textCardInput: {
+    minHeight: 140,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    padding: 8,
+  },
+  textCount: { position: 'absolute', right: 12, bottom: 10, fontSize: 11, opacity: 0.7 },
+  textOptionLabel: { color: Colors.sub, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 8 },
+  colorOptionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingBottom: 14 },
+  backgroundSwatch: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  fontColorSwatch: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, borderColor: Colors.border2 },
+  optionSelected: { borderColor: Colors.white, transform: [{ scale: 1.08 }] },
+  swatchCheck: { color: Colors.white, fontSize: 17, fontWeight: '900' },
+  fontSample: { color: Colors.text, fontSize: 18, lineHeight: 23 },
   mediaPick: { backgroundColor: Colors.card, borderRadius: 12, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: Colors.border2 },
   mediaPickText: { color: Colors.sub, fontWeight: '600' },
   primaryBtn: { backgroundColor: Colors.orange, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
@@ -768,4 +1141,13 @@ const pf = StyleSheet.create({
   commentInput: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
   commentField: { flex: 1, backgroundColor: Colors.card, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, color: Colors.text, fontSize: 14 },
   commentPost: { color: Colors.orange, fontWeight: '700', fontSize: 14 },
+  textCard: {
+    flex: 1,
+    width: W,
+    height: W,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  textCardText: { textAlign: 'center' },
 });
