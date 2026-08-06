@@ -238,6 +238,16 @@ export const getFeed = async (lat: number, lng: number, radiusKm: number, page =
   }
 };
 
+export const getPostsByShop = async (shopId: string): Promise<Post[]> => {
+  const { data, error } = await supabase
+    .from('posts')
+    .select('*')
+    .eq('shop_id', shopId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as Post[];
+};
+
 export const likePost = async (userId: string, postId: string) => {
   const { error } = await supabase
     .from('post_likes')
