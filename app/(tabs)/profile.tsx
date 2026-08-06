@@ -1,13 +1,13 @@
 // app/(tabs)/profile.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   Switch, Alert, ActivityIndicator, StyleSheet, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
-import { updateProfile } from '../../lib/api';
-import { Colors, RADIUS_OPTIONS } from '../../constants/theme';
+import { updateProfile, getShopByOwner, getPostsByShop, updateShop } from '../../lib/api';
+import { Colors, DEFAULT_SHOP_BIO, RADIUS_OPTIONS } from '../../constants/theme';
 
 function StatBox({ value, label }: { value: string; label: string }) {
   return (
@@ -38,12 +38,14 @@ function SettingRow({ icon, label, value, onPress, danger, toggle, toggled, onTo
 function EditModal({ profile, onSave, onClose }: { profile: any; onSave: (p: any) => void; onClose: () => void }) {
   const [name,  setName]  = useState(profile.name);
   const [city,  setCity]  = useState(profile.city);
+  const [bio,   setBio]   = useState(profile.bio || DEFAULT_SHOP_BIO);
   const [saving,setSaving]= useState(false);
 
   const save = async () => {
     if (!name.trim() || !city.trim()) { Alert.alert('Required', 'Name and city cannot be empty'); return; }
+    if (bio.length > 500) { Alert.alert('Bio too long', 'Bio can be up to 500 characters.'); return; }
     setSaving(true);
-    try { await onSave({ name: name.trim(), city: city.trim() }); onClose(); }
+    try { await onSave({ name: name.trim(), city: city.trim(), bio: bio.trim() }); onClose(); }
     catch (e: any) { Alert.alert('Error', e.message); }
     finally { setSaving(false); }
   };
@@ -59,6 +61,18 @@ function EditModal({ profile, onSave, onClose }: { profile: any; onSave: (p: any
       <Text style={m.label}>CITY</Text>
       <View style={m.inputWrap}>
         <TextInput style={m.input} value={city} onChangeText={setCity} placeholderTextColor={Colors.dim} />
+      </View>
+      <Text style={m.label}>BIO (500 characters)</Text>
+      <View style={[m.inputWrap, { height: 100 }]}>
+        <TextInput
+          style={[m.input, { textAlignVertical: 'top' }]}
+          value={bio}
+          onChangeText={setBio}
+          multiline
+          maxLength={500}
+          placeholder="Tell people about yourself or your shop…"
+          placeholderTextColor={Colors.dim}
+        />
       </View>
       <TouchableOpacity onPress={save} disabled={saving} style={m.btn}>
         {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={m.btnText}>Save Changes</Text>}
@@ -96,13 +110,37 @@ export default function ProfileScreen() {
   const [notifs,     setNotifs]     = useState(true);
   const [signingOut, setSigningOut] = useState(false);
 
-  if (!profile) return null;
+  const [sellerShopProducts, setSellerShopProducts] = useState<number | null>(null);
+  const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
+  const isBuyer = profile?.role === 'buyer';
+  useEffect(() => {
+    if (!profile || !isSeller) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const shop = await getShopByOwner(profile.id);
+        if (!shop || cancelled) {
+          return;
+        }
+        const posts = await getPostsByShop(shop.id);
+        setSellerShopProducts(posts.filter(post => !!post.product_id).length);
+      } catch {
+        if (!cancelled) setSellerShopProducts(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSeller, profile?.id]);
 
-  const isSeller = profile.role === 'seller' || profile.role === 'service_provider';
-  const isBuyer = profile.role === 'buyer';
+  if (!profile) return null;
 
   const handleSaveProfile = async (updates: Partial<typeof profile>) => {
     await updateProfile(profile.id, updates);
+    if (isSeller && typeof updates.bio === 'string') {
+      const shop = await getShopByOwner(profile.id);
+      if (shop) await updateShop(shop.id, { description: updates.bio });
+    }
     updateLocal(updates);
   };
 
@@ -182,11 +220,15 @@ export default function ProfileScreen() {
             <Text style={s.roleText}>{roleEmoji} {roleLabel}</Text>
           </View>
           <Text style={s.city}>📍 {profile.city} · within {profile.radius_km} km</Text>
+          <Text style={s.bio} numberOfLines={3}>{profile.bio || DEFAULT_SHOP_BIO}</Text>
         </View>
 
         {/* Stats */}
         <View style={s.statsRow}>
-          <StatBox value={isSeller ? '—' : String(followedShopIds.length)} label={isSeller ? 'Products' : 'Following'} />
+          <StatBox
+            value={isSeller ? String(sellerShopProducts ?? 0) : String(followedShopIds.length)}
+            label={isSeller ? 'Products' : 'Following'}
+          />
           <StatBox value={String(followedShopIds.length)} label={isSeller ? 'Followers' : 'Shops'} />
           <StatBox value={`${profile.radius_km}`} label="km radius" />
         </View>
@@ -266,6 +308,7 @@ const s = StyleSheet.create({
   stat:         { flex: 1, backgroundColor: Colors.card, borderRadius: 14, padding: 14, alignItems: 'center', borderWidth: 1, borderColor: Colors.border2 },
   statVal:      { fontSize: 22, fontWeight: '800', color: Colors.text },
   statLabel:    { fontSize: 10, color: Colors.sub, marginTop: 2 },
+  bio:          { fontSize: 12, color: Colors.sub, marginTop: 6 },
   section:      { marginHorizontal: 20, marginTop: 20, backgroundColor: Colors.card, borderRadius: 16, borderWidth: 1, borderColor: Colors.border2, overflow: 'hidden' },
   sectionTitle: { fontSize: 11, fontWeight: '700', color: Colors.sub, letterSpacing: 0.8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4, textTransform: 'uppercase' },
   settingRow:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: Colors.border },

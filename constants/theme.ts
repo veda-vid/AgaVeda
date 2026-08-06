@@ -28,6 +28,8 @@ export const Colors = {
   black:    '#000000',
 } as const;
 
+export const DEFAULT_SHOP_BIO = 'Hey, I am new in the market. with hi smiles';
+
 export const Fonts = {
   display: 'Syne_700Bold',
   displayXBold: 'Syne_800ExtraBold',

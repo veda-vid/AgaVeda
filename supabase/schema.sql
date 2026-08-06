@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   phone           TEXT UNIQUE,
   email           TEXT,
   avatar_url      TEXT,
+  bio             TEXT NOT NULL DEFAULT 'Hey, I am new in the market. with hi smiles',
   role            TEXT NOT NULL DEFAULT 'buyer'
                     CHECK (role IN ('buyer','seller','service_provider','super_admin')),
   city            TEXT NOT NULL DEFAULT '',

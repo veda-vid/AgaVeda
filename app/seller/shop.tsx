@@ -8,7 +8,7 @@ import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
 import { createShop, getShopByOwner, updateShop, updateProfile as updateUserProfile } from '../../lib/api';
 import { getSupabase, isDemoAuthEnabled } from '../../lib/supabase';
-import { Colors, SHOP_CATEGORIES } from '../../constants/theme';
+import { Colors, DEFAULT_SHOP_BIO, SHOP_CATEGORIES } from '../../constants/theme';
 import type { ShopCategory } from '../../types';
 
 export default function SellerShopScreen() {
@@ -19,7 +19,7 @@ export default function SellerShopScreen() {
   const [saving, setSaving] = useState(false);
   const [shopId, setShopId] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(DEFAULT_SHOP_BIO);
   const [category, setCategory] = useState<ShopCategory>('grocery');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState(profile?.phone ?? '');
@@ -41,7 +41,7 @@ export default function SellerShopScreen() {
         if (shop) {
           setShopId(shop.id);
           setName(shop.name);
-          setDescription(shop.description);
+          setDescription(shop.description || DEFAULT_SHOP_BIO);
           setCategory(shop.category);
           setAddress(shop.address);
           setPhone(shop.phone);
