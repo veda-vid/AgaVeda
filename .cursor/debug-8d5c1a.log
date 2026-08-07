@@ -1,0 +1,1 @@
+{"sessionId":"8d5c1a","runId":"pre-fix","hypothesisId":"A,B,D","location":"app/(tabs)/profile.tsx:shop-load","message":"Loaded profile shop counters and bio fields","data":{"cachedTotalProducts":0,"totalPosts":7,"productPosts":4,"profileBioLength":0,"shopDescriptionLength":26},"timestamp":1786029114133}

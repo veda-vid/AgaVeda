@@ -8,6 +8,10 @@ import { getSupabase } from '../../lib/supabase';
 import { useAuthStore } from '../../stores/authStore';
 import { Colors } from '../../constants/theme';
 
+function hasCompletedLocation(profile: { city?: string; lat?: number | null; lng?: number | null } | null | undefined) {
+  return !!profile && !!profile.city?.trim() && profile.lat != null && profile.lng != null;
+}
+
 export default function OAuthCallbackScreen() {
   const { role } = useLocalSearchParams<{ role?: string }>();
   const { profile, isInitialized } = useAuthStore();
@@ -112,9 +116,9 @@ export default function OAuthCallbackScreen() {
       return;
     }
 
-    const destination = profile
-      ? '/'
-      : `/location${role ? `?role=${encodeURIComponent(role)}` : ''}`;
+    const destination = hasCompletedLocation(profile)
+      ? '/(tabs)'
+      : `/location?role=${encodeURIComponent(role ?? profile?.role ?? 'buyer')}`;
 
     router.replace(destination as any);
   }, [isInitialized, profile, role, ready, callbackType]);

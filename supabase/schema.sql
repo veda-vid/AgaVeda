@@ -433,12 +433,11 @@ RETURNS TABLE (
          sv.phone, sv.whatsapp, sv.area_served, sv.city, sv.lat, sv.lng,
          sv.experience_years, sv.total_jobs, sv.avg_rating, sv.total_reviews,
          sv.is_available, sv.is_verified, sv.created_at,
-         CASE WHEN sv.location IS NOT NULL
-           THEN ST_Distance(sv.location, ST_SetSRID(ST_MakePoint(user_lng, user_lat),4326)::geography) / 1000
-           ELSE 9999
-         END AS distance_km
+         ST_Distance(sv.location, ST_SetSRID(ST_MakePoint(user_lng, user_lat),4326)::geography) / 1000 AS distance_km
   FROM public.service_providers sv
-  ORDER BY sv.avg_rating DESC;
+  WHERE sv.location IS NOT NULL
+    AND ST_DWithin(sv.location, ST_SetSRID(ST_MakePoint(user_lng, user_lat),4326)::geography, radius_km * 1000)
+  ORDER BY distance_km ASC, sv.avg_rating DESC;
 $$;
 
 -- Ad impression / click helpers

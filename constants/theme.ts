@@ -1,32 +1,96 @@
 // constants/theme.ts — Design tokens for CityConnect
 
-export const Colors = {
-  // Core backgrounds
-  bg:       '#08080E',
-  surface:  '#0F0F1A',
-  card:     '#141420',
-  border:   '#1C1C2E',
-  border2:  '#252538',
+export type AppThemeId = 'midnight' | 'sunrise' | 'forest';
 
-  // Brand
-  orange:   '#FF5722',
-  amber:    '#FFA726',
-  gradient: ['#FF5722', '#FFA726'] as const,
+export const THEME_STORAGE_KEY = 'cityconnect.theme';
 
-  // Semantic
-  green:    '#00C853',
-  blue:     '#448AFF',
-  purple:   '#7C4DFF',
-  red:      '#FF1744',
-  yellow:   '#FFD600',
+export const ThemePalettes = {
+  midnight: {
+    // Core backgrounds
+    bg: '#08080E',
+    surface: '#0F0F1A',
+    card: '#141420',
+    border: '#1C1C2E',
+    border2: '#252538',
 
-  // Text
-  text:     '#F5F0EB',
-  sub:      '#9997AA',
-  dim:      '#5A5870',
-  white:    '#FFFFFF',
-  black:    '#000000',
+    // Brand
+    orange: '#FF5722',
+    amber: '#FFA726',
+    gradient: ['#FF5722', '#FFA726'] as const,
+
+    // Semantic
+    green: '#00C853',
+    blue: '#448AFF',
+    purple: '#7C4DFF',
+    red: '#FF1744',
+    yellow: '#FFD600',
+
+    // Text
+    text: '#F5F0EB',
+    sub: '#9997AA',
+    dim: '#5A5870',
+    white: '#FFFFFF',
+    black: '#000000',
+  },
+  sunrise: {
+    bg: '#FFF7F0',
+    surface: '#FFFFFF',
+    card: '#FFF1E8',
+    border: '#F0D6C6',
+    border2: '#E3C1AD',
+    orange: '#E96A2C',
+    amber: '#F5A623',
+    gradient: ['#E96A2C', '#F5A623'] as const,
+    green: '#1B8A5A',
+    blue: '#2F6BFF',
+    purple: '#7A4DFF',
+    red: '#D93A62',
+    yellow: '#E0B83F',
+    text: '#2A1C14',
+    sub: '#7B5E50',
+    dim: '#A28879',
+    white: '#FFFFFF',
+    black: '#000000',
+  },
+  forest: {
+    bg: '#07110C',
+    surface: '#0D1913',
+    card: '#12231A',
+    border: '#1A3126',
+    border2: '#234233',
+    orange: '#2F9E67',
+    amber: '#8DD06C',
+    gradient: ['#2F9E67', '#8DD06C'] as const,
+    green: '#34C759',
+    blue: '#4DA3FF',
+    purple: '#8B7CF6',
+    red: '#FF5C79',
+    yellow: '#D6C451',
+    text: '#EEF7F1',
+    sub: '#92AA9C',
+    dim: '#5E776A',
+    white: '#FFFFFF',
+    black: '#000000',
+  },
 } as const;
+
+export type AppColors = typeof ThemePalettes.midnight;
+
+export const THEME_OPTIONS = [
+  { id: 'midnight' as AppThemeId, label: 'Midnight', accent: ThemePalettes.midnight.orange, note: 'Classic dark' },
+  { id: 'sunrise' as AppThemeId, label: 'Sunrise', accent: ThemePalettes.sunrise.orange, note: 'Warm light' },
+  { id: 'forest' as AppThemeId, label: 'Forest', accent: ThemePalettes.forest.orange, note: 'Calm green' },
+] as const;
+
+function readStoredThemeId(): AppThemeId {
+  if (typeof window === 'undefined' || !window.localStorage) return 'midnight';
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === 'sunrise' || stored === 'forest' || stored === 'midnight' ? stored : 'midnight';
+}
+
+export const CurrentThemeId: AppThemeId = readStoredThemeId();
+
+export const Colors = ThemePalettes[CurrentThemeId];
 
 export const DEFAULT_SHOP_BIO = 'Hey, I am new in the market. with hi smiles';
 

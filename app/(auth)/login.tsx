@@ -20,6 +20,10 @@ import { friendlyAuthNetworkError } from '../../lib/config';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
+function hasCompletedLocation(profile: { city?: string; lat?: number | null; lng?: number | null } | null | undefined) {
+  return !!profile && !!profile.city?.trim() && profile.lat != null && profile.lng != null;
+}
+
 function notify(title: string, message: string) {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     window.alert(`${title}\n\n${message}`);
@@ -82,7 +86,15 @@ export default function LoginScreen() {
 
   const goAfterAuth = async () => {
     try { await refreshProfile(); } catch {}
-    router.replace({ pathname: '/location', params: { role: selectedRole } } as any);
+    const nextProfile = useAuthStore.getState().profile;
+    if (hasCompletedLocation(nextProfile)) {
+      router.replace('/(tabs)' as any);
+      return;
+    }
+    router.replace({
+      pathname: '/location',
+      params: { role: selectedRole },
+    } as any);
   };
 
   const switchMode = (next: Mode) => {

@@ -63,9 +63,15 @@ async function applySession(userId: string | undefined, set: (partial: Partial<A
   }
   try {
     const profile = await getProfile(userId);
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'auth-profile-debug',hypothesisId:'H5',location:'stores/authStore.ts:66',message:'profile loaded during auth session apply',data:{hasProfile:true,role:profile.role,hasAvatarUrl:!!profile.avatar_url,hasCity:!!profile.city},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     set({ profile, isLoading: false, isInitialized: true });
     loadUserExtras(userId, set).catch(() => {});
   } catch {
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'auth-profile-debug',hypothesisId:'H5',location:'stores/authStore.ts:70',message:'profile missing during auth session apply',data:{hasProfile:false},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // Authenticated but profile missing — keep session usable for location onboarding
     set({ profile: null, isLoading: false, isInitialized: true });
   }
@@ -111,6 +117,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     const userId = data.session?.user?.id;
     if (!userId) return;
     const profile = await getProfile(userId);
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'auth-profile-debug',hypothesisId:'H5',location:'stores/authStore.ts:118',message:'profile refreshed explicitly',data:{role:profile.role,hasAvatarUrl:!!profile.avatar_url,hasCity:!!profile.city},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     set({ profile });
     await loadUserExtras(userId, set);
   },

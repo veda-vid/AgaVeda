@@ -44,6 +44,8 @@ export default function LocationScreen() {
   const [mapReady, setMapReady] = useState(false);
   const didAutoDetect = useRef(false);
   const [autoDetected, setAutoDetected] = useState(false);
+  const selectedRole = ((role as UserRole) || profile?.role || 'buyer') as UserRole;
+  const isSellerOnly = selectedRole === 'seller';
 
   const resolveCityName = async (latitude: number, longitude: number) => {
     try {
@@ -262,7 +264,9 @@ export default function LocationScreen() {
       <Text style={s.icon}>📍</Text>
       <Text style={s.title}>Set Your Area</Text>
       <Text style={s.sub}>
-        We auto-detect your city and set a 5 km discovery range. Adjust it anytime with quick chips, map preview, or manual entry.
+        {isSellerOnly
+          ? 'Set your seller location and service radius once during onboarding. After this first setup, your account will keep using the same area.'
+          : 'We auto-detect your city and set a 5 km discovery range. Buyers can update the radius later anytime.'}
       </Text>
 
       <View style={s.statusCard}>
@@ -273,7 +277,9 @@ export default function LocationScreen() {
         <Text style={s.statusText}>
           {autoDetected
             ? `Your feed will open around ${city || 'your area'} with ${radius} km as the selected range.`
-            : 'Choose a city below or type manually if GPS is unavailable.'}
+            : isSellerOnly
+              ? 'Confirm the seller area below. This location is saved for future sign-ins.'
+              : 'Choose a city below or type manually if GPS is unavailable.'}
         </Text>
       </View>
 
@@ -355,7 +361,11 @@ export default function LocationScreen() {
           </TouchableOpacity>
         ))}
       </View>
-      <Text style={s.hint}>Default is 5 km so nearby shops, feeds and services feel instantly local.</Text>
+      <Text style={s.hint}>
+        {isSellerOnly
+          ? 'This seller radius is captured on first setup and then reused automatically on future logins.'
+          : 'Default is 5 km so nearby shops, feeds and services feel instantly local.'}
+      </Text>
 
       <TouchableOpacity
         onPress={finish}

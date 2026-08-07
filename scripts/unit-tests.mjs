@@ -61,6 +61,19 @@ function filterFollowingFeed(posts, followedShopIds) {
   return posts.filter(p => followedShopIds.includes(p.shop_id));
 }
 
+function hasCompletedLocation(profile) {
+  return !!profile && !!String(profile.city || '').trim() && profile.lat != null && profile.lng != null;
+}
+
+function routeAfterAuth(profile, fallbackRole = 'buyer') {
+  if (hasCompletedLocation(profile)) return '/(tabs)';
+  return `/location?role=${encodeURIComponent(profile?.role ?? fallbackRole)}`;
+}
+
+function canChangeRadius(role) {
+  return role !== 'seller';
+}
+
 describe('location helpers', () => {
   it('defaults radius option includes 5 km', () => {
     const RADIUS_OPTIONS = [2, 5, 10, 20, 50];
@@ -128,6 +141,34 @@ describe('buyer vs seller capabilities', () => {
     assert.equal(buyerCaps.follow && buyerCaps.cart && buyerCaps.review, true);
     assert.equal(sellerCaps.upload && sellerCaps.stories, true);
     assert.equal(buyerCaps.upload, false);
+  });
+});
+
+describe('location onboarding rules', () => {
+  it('sends returning seller with saved location straight to tabs', () => {
+    const route = routeAfterAuth({
+      role: 'seller',
+      city: 'Chandigarh',
+      lat: 30.7333,
+      lng: 76.7794,
+    });
+    assert.equal(route, '/(tabs)');
+  });
+
+  it('keeps first-time seller on location setup', () => {
+    const route = routeAfterAuth({
+      role: 'seller',
+      city: '',
+      lat: null,
+      lng: null,
+    });
+    assert.equal(route, '/location?role=seller');
+  });
+
+  it('locks seller radius changes but keeps buyer radius open', () => {
+    assert.equal(canChangeRadius('seller'), false);
+    assert.equal(canChangeRadius('buyer'), true);
+    assert.equal(canChangeRadius('service_provider'), true);
   });
 });
 

@@ -181,29 +181,14 @@ export default function UploadScreen() {
         media_type: mediaItems[0]?.type ?? 'image',
       });
 
-      // Success UX: let the seller either upload another item or go back home.
+      // After a successful upload, always take the seller back to the home feed.
+      resetForm();
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert('🎉 Posted! Your product is now live on the feed.');
-        const uploadAnother = window.confirm('Upload another product?\n\nOK = Upload another\nCancel = Go to Home');
-        if (uploadAnother) resetForm();
-        else {
-          // Take them straight to the relevant Shops section if we detected a category tag.
-          router.replace(
-            derivedShopCategory
-              ? ({ pathname: '/(tabs)/shops', params: { category: derivedShopCategory } } as any)
-              : ('/(tabs)/' as any),
-          );
-        }
+        window.alert('🎉 Posted! Your product is now live on the home feed.');
       } else {
-        const toGoHome = derivedShopCategory
-          ? () => router.replace({ pathname: '/(tabs)/shops', params: { category: derivedShopCategory } } as any)
-          : () => router.replace('/(tabs)/' as any);
-
-        Alert.alert('🎉 Posted!', 'Your product is now live on the feed.', [
-          { text: 'Upload Another', onPress: () => resetForm() },
-          { text: 'Go to Home', onPress: toGoHome },
-        ]);
+        Alert.alert('🎉 Posted!', 'Your product is now live on the home feed.');
       }
+      router.replace('/(tabs)' as any);
     } catch (e: any) {
       showMessage('Error', e?.message || 'Failed to post product');
     } finally { setUploading(false); }
