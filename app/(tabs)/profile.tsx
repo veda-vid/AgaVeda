@@ -532,6 +532,7 @@ export default function ProfileScreen() {
             >
               {shopCoverUrl ? (
                 <Image
+                  key={shopCoverUrl}
                   source={{ uri: shopCoverUrl }}
                   style={s.coverImage}
                   resizeMode="cover"
@@ -548,7 +549,7 @@ export default function ProfileScreen() {
                 />
               ) : null}
               <View style={s.coverOverlay} />
-              <Text style={s.coverEmoji}>🏙️</Text>
+              {!shopCoverUrl ? <Text style={s.coverEmoji}>🏙️</Text> : null}
             </TouchableOpacity>
 
             {/* Avatar + edit */}
