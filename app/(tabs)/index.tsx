@@ -315,12 +315,14 @@ export default function FeedScreen() {
       const p = reset ? 0 : pageRef.current;
       const mode = feedModeRef.current;
       let data: any[] = [];
+
       if (mode === 'following' && isBuyer) {
         data = await getFollowingFeed(profile.id, p, followedRef.current);
       } else {
         data = await getFeed(profile.lat ?? 19.076, profile.lng ?? 72.8777, profile.radius_km ?? 5, p);
       }
       const rows = Array.isArray(data) ? data : [];
+
       setPosts(prev => (reset ? rows : [...prev, ...rows]));
       setHasMore(rows.length >= 10);
       pageRef.current = p + 1;
@@ -390,6 +392,15 @@ export default function FeedScreen() {
     };
   }, [profile?.id, isSeller]);
 
+  // Auto-refresh the feed every 60 seconds so the home page stays fresh.
+  useEffect(() => {
+    if (!profile) return;
+    const id = setInterval(() => {
+      load(true);
+    }, 60000);
+    return () => clearInterval(id);
+  }, [profile?.id, load]);
+
   // Set following mode once after follows load — avoid toggling forever
   useEffect(() => {
     if (!profile || isSeller || modeInitializedRef.current) return;
@@ -408,7 +419,12 @@ export default function FeedScreen() {
     const t = setTimeout(async () => {
       setSearching(true);
       try {
-        const results = await globalSearch(q, profile.lat ?? 19.076, profile.lng ?? 72.8777, Math.max(profile.radius_km ?? 5, 20));
+        const results = await globalSearch(
+          q,
+          profile.lat ?? 19.076,
+          profile.lng ?? 72.8777,
+          profile.radius_km ?? 5,
+        );
         setSearchResults(results);
       } catch {
         setSearchResults([]);

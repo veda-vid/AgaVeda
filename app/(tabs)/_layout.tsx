@@ -17,8 +17,7 @@ function TabIcon({
   }
   return (
     <View style={s.tabItem}>
-      <Text style={[s.tabEmoji, { fontSize: focused ? 26 : 22 }]}>{emoji}</Text>
-      <Text style={[s.tabLabel, focused && s.tabLabelActive]}>{label}</Text>
+      <Text style={[s.tabEmoji, focused ? s.tabEmojiActive : s.tabEmojiInactive, { fontSize: focused ? 26 : 22 }]}>{emoji}</Text>
       {focused && <View style={s.dot} />}
       {!!badge && badge > 0 && (
         <View style={s.badge}>
@@ -43,11 +42,11 @@ export default function TabsLayout() {
       }}>
       <Tabs.Screen
         name="index"
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="🏠" label="Feed" focused={focused} /> }}
+        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="⌂" label="Home" focused={focused} /> }}
       />
       <Tabs.Screen
         name="shops"
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="🏪" label="Shops" focused={focused} /> }}
+        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="🛍️" label="Shops" focused={focused} /> }}
       />
       <Tabs.Screen
         name="upload"
@@ -89,8 +88,8 @@ const s = StyleSheet.create({
   },
   tabItem: { alignItems: 'center', gap: 2 },
   tabEmoji: {},
-  tabLabel: { fontSize: 9, color: Colors.dim, fontWeight: '500' },
-  tabLabelActive: { color: Colors.orange, fontWeight: '700' },
+  tabEmojiActive: { color: Colors.text },
+  tabEmojiInactive: { color: Colors.dim },
   dot: { width: 4, height: 4, borderRadius: 2, backgroundColor: Colors.orange },
   badge: {
     position: 'absolute', top: -2, right: -8, minWidth: 16, height: 16, borderRadius: 8,
