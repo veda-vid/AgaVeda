@@ -57,7 +57,7 @@ BEGIN
   UPDATE public.profiles
   SET
     name       = 'Test Admin',
-    role       = 'seller',
+    role       = 'super_admin',
     city       = 'Mumbai',
     lat        = 19.0760,
     lng        = 72.8777,

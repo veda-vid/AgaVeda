@@ -11,7 +11,7 @@ function TabIcon({
   focused,
   badge,
 }: {
-  icon: 'home' | 'shops' | 'upload' | 'cart' | 'services' | 'profile';
+  icon: 'home' | 'shops' | 'upload' | 'cart' | 'services' | 'profile' | 'news';
   focused: boolean;
   badge?: number;
 }) {
@@ -65,6 +65,9 @@ function TabIcon({
             <Path d="M4 21c0-4.5 4-7 8-7s8 2.5 8 7v1H4v-1Z" fill={iconColor} />
           </Svg>
         )}
+        {icon === 'news' && (
+          <Text style={{ fontSize: 24, color: iconColor, fontWeight: '900', letterSpacing: -0.5 }}>D</Text>
+        )}
       </View>
 
       {focused && <View style={s.dot} />}
@@ -94,16 +97,16 @@ export default function TabsLayout() {
         options={{ tabBarIcon: ({ focused }) => <TabIcon icon="home" focused={focused} /> }}
       />
       <Tabs.Screen
+        name="news"
+        options={{ tabBarIcon: ({ focused }) => <TabIcon icon="news" focused={focused} /> }}
+      />
+      <Tabs.Screen
         name="shops"
         options={{ tabBarIcon: ({ focused }) => <TabIcon icon="shops" focused={focused} /> }}
       />
       <Tabs.Screen
         name="upload"
-        options={
-          isSeller
-            ? { tabBarIcon: ({ focused }) => <TabIcon icon="upload" focused={focused} /> }
-            : { href: null }
-        }
+        options={{ href: null }}
       />
       <Tabs.Screen
         name="cart"

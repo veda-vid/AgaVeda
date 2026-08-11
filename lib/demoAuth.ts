@@ -104,6 +104,7 @@ function ensureProfile(user: DemoUser, db: DemoDB): Profile {
     lng: null,
     radius_km: 5,
     is_verified: false,
+    is_suspended: false,
     created_at: now,
     updated_at: now,
   };
@@ -207,6 +208,7 @@ export const demoUpsertProfile = async (profile: Partial<Profile> & { id: string
     lng: profile.lng ?? prev?.lng ?? null,
     radius_km: profile.radius_km ?? prev?.radius_km ?? 5,
     is_verified: profile.is_verified ?? prev?.is_verified ?? false,
+    is_suspended: profile.is_suspended ?? prev?.is_suspended ?? false,
     created_at: prev?.created_at ?? now,
     updated_at: now,
   };

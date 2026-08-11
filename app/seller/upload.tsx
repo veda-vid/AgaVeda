@@ -112,6 +112,9 @@ export default function UploadScreen() {
 
     setUploading(true);
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H2',location:'app/seller/upload.tsx:handlePost:start',message:'seller upload started',data:{role:profile.role,lat:profile.lat ?? null,lng:profile.lng ?? null,radius_km:profile.radius_km ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       // RLS requires profiles.role to be 'seller' (or super_admin) for shops INSERT.
       if (profile.role !== 'seller' && profile.role !== 'super_admin') {
         try {
@@ -173,13 +176,16 @@ export default function UploadScreen() {
         await updateShop(myShop.id, { category: derivedShopCategory } as any);
       }
 
-      await createPost({
+      const createdPost = await createPost({
         shop_id: myShop.id,
         product_id: product.id,
         caption: captionText,
         media_urls: uploadedUrls,
         media_type: mediaItems[0]?.type ?? 'image',
       });
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H3',location:'app/seller/upload.tsx:handlePost:afterCreatePost',message:'post created (seller upload)',data:{shopId:myShop.id,productId:product.id,postId:createdPost?.id ?? null,createdAt:createdPost?.created_at ?? null,captionLen:captionText.length,mediaCount:uploadedUrls.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       // After a successful upload, always take the seller back to the home feed.
       resetForm();
@@ -188,8 +194,14 @@ export default function UploadScreen() {
       } else {
         Alert.alert('🎉 Posted!', 'Your product is now live on the home feed.');
       }
-      router.replace('/(tabs)' as any);
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H1',location:'app/seller/upload.tsx:handlePost:navigateTabs',message:'navigating to home feed after post',data:{wasSellerRole:profile.role,hasShop:true},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      router.replace({ pathname: '/(tabs)', params: { refresh_feed: '1' } } as any);
     } catch (e: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H3',location:'app/seller/upload.tsx:handlePost:catch',message:'seller upload failed',data:{errorMessage:e?.message ?? String(e),role:profile?.role ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       showMessage('Error', e?.message || 'Failed to post product');
     } finally { setUploading(false); }
   };

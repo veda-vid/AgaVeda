@@ -2,20 +2,42 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput, Image,
-  Switch, Alert, ActivityIndicator, StyleSheet, Platform,
+  Switch, Alert, ActivityIndicator, StyleSheet, Platform, Modal, FlatList, useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
-import { updateProfile, uploadImage, getShopByOwner, getPostsByShop, updateShop } from '../../lib/api';
+import { updateProfile, uploadImage, getShopByOwner, getPostsByShop, updateShop, getSavedPosts, getMySellerCompetitiveProfile } from '../../lib/api';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors, CurrentThemeId, DEFAULT_SHOP_BIO, RADIUS_OPTIONS, THEME_OPTIONS, THEME_STORAGE_KEY, type AppThemeId } from '../../constants/theme';
+import type { Post, SellerCompetitiveProfile } from '../../types';
 
-function StatBox({ value, label }: { value: string; label: string }) {
+function StatBox({ value, label, icon }: { value: string; label: string; icon?: string }) {
+  const [hovered, setHovered] = useState(false);
   return (
-    <View style={s.stat}>
+    <TouchableOpacity
+      activeOpacity={0.9}
+      style={s.stat}
+      onPressIn={() => setHovered(true)}
+      onPressOut={() => setHovered(false)}
+      {...(Platform.OS === 'web'
+        ? {
+            onMouseEnter: () => setHovered(true),
+            onMouseLeave: () => setHovered(false),
+          }
+        : {})}
+    >
+      {icon ? (
+        <View style={s.statIconWrap}>
+          <Text style={s.statIcon}>{icon}</Text>
+        </View>
+      ) : null}
       <Text style={s.statVal}>{value}</Text>
-      <Text style={s.statLabel}>{label}</Text>
-    </View>
+      {hovered ? (
+        <View style={s.statTooltip}>
+          <Text style={s.statTooltipText}>{label}</Text>
+        </View>
+      ) : null}
+    </TouchableOpacity>
   );
 }
 
@@ -275,8 +297,38 @@ function parseTextCardCaption(caption?: string): TextCardMeta | null {
   }
 }
 
+function timeAgo(ts: string) {
+  const seconds = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function formatPostDate(ts: string) {
+  return new Date(ts).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function hasCaptionTags(caption?: string) {
+  return /(^|\s)#[a-z0-9_]+/i.test(caption ?? '');
+}
+
+type ProfilePostItem = Post & {
+  shop_name?: string | null;
+  shop_logo?: string | null;
+  shop_category?: string | null;
+  shop_avg_rating?: number | null;
+  shop_is_open?: boolean | null;
+  saved_at?: string;
+};
+
 export default function ProfileScreen() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
   const { profile, updateProfile: updateLocal, signOut, followedShopIds } = useAuthStore();
   const [editOpen,   setEditOpen]   = useState(false);
   const [radiusOpen, setRadiusOpen] = useState(false);
@@ -292,9 +344,15 @@ export default function ProfileScreen() {
   const [settingsQuery, setSettingsQuery] = useState('');
   const [selectedShopPlan, setSelectedShopPlan] = useState<'free' | 'pro' | 'premium'>('free');
   const [plansOpen, setPlansOpen] = useState(false);
-  const [profilePosts, setProfilePosts] = useState<any[]>([]);
+  const [profilePosts, setProfilePosts] = useState<ProfilePostItem[]>([]);
+  const [savedPosts, setSavedPosts] = useState<ProfilePostItem[]>([]);
+  const [competitiveProfile, setCompetitiveProfile] = useState<SellerCompetitiveProfile | null>(null);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [competitiveLoading, setCompetitiveLoading] = useState(false);
   const [postOpen, setPostOpen] = useState(false);
-  const [activePost, setActivePost] = useState<any | null>(null);
+  const [postViewerPosts, setPostViewerPosts] = useState<ProfilePostItem[]>([]);
+  const [activePostIndex, setActivePostIndex] = useState(0);
   const [appearanceBarOpen, setAppearanceBarOpen] = useState(false);
   const [termsBarOpen, setTermsBarOpen] = useState(false);
   const [settingsBarOpen, setSettingsBarOpen] = useState(false);
@@ -302,6 +360,9 @@ export default function ProfileScreen() {
   const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
   const isBuyer = profile?.role === 'buyer';
   const isLockedSeller = profile?.role === 'seller';
+  const gridColumns = width >= 900 ? 3 : 2;
+  const gridGap = 6;
+  const gridItemWidth = (width - 40 - gridGap * (gridColumns - 1)) / gridColumns;
 
   useEffect(() => {
     if (!profile || !isSeller) return;
@@ -336,6 +397,7 @@ export default function ProfileScreen() {
     }
     let cancelled = false;
     (async () => {
+      if (!cancelled) setPostsLoading(true);
       try {
         const shop = await getShopByOwner(profile.id);
         if (!shop) {
@@ -346,15 +408,63 @@ export default function ProfileScreen() {
         const textCardCount = Array.isArray(posts)
           ? posts.filter(p => typeof p?.caption === 'string' && p.caption.startsWith('__TEXT_CARD__')).length
           : 0;
-        if (!cancelled) setProfilePosts(Array.isArray(posts) ? posts : []);
+        const orderedPosts = Array.isArray(posts)
+          ? [...posts].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          : [];
+        if (!cancelled) setProfilePosts(orderedPosts);
       } catch {
         if (!cancelled) setProfilePosts([]);
+      } finally {
+        if (!cancelled) setPostsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [profile?.id, isSeller, profileTab, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'profile') return;
+    if (!profile || profileTab !== 'saved') return;
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) setSavedLoading(true);
+      try {
+        const posts = await getSavedPosts(profile.id);
+        if (!cancelled) setSavedPosts(Array.isArray(posts) ? posts : []);
+      } catch {
+        if (!cancelled) setSavedPosts([]);
+      } finally {
+        if (!cancelled) setSavedLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, profileTab, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'profile') return;
+    if (!profile || !isSeller) {
+      setCompetitiveProfile(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) setCompetitiveLoading(true);
+      try {
+        const next = await getMySellerCompetitiveProfile();
+        if (!cancelled) setCompetitiveProfile(next);
+      } catch {
+        if (!cancelled) setCompetitiveProfile(null);
+      } finally {
+        if (!cancelled) setCompetitiveLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, isSeller, viewMode]);
 
   useEffect(() => {
     if (!profile) return;
@@ -502,6 +612,55 @@ export default function ProfileScreen() {
   const roleEmoji = profile.role === 'buyer' ? '🛍️' : profile.role === 'seller' ? '🏪' : '🔧';
   const roleLabel = profile.role === 'buyer' ? 'Buyer' : profile.role === 'seller' ? 'Seller' : 'Service Provider';
   const activeTheme = THEME_OPTIONS.find(option => option.id === CurrentThemeId) ?? THEME_OPTIONS[0];
+  const taggedPosts = profilePosts.filter(post => hasCaptionTags(post.caption));
+  const activeGridPosts = profileTab === 'posts'
+    ? profilePosts
+    : profileTab === 'tagged'
+      ? taggedPosts
+      : savedPosts;
+  const isGridLoading = profileTab === 'saved' ? savedLoading : postsLoading;
+  const visibleProfilePosts = postOpen ? postViewerPosts.slice(activePostIndex) : [];
+  const emptyState = profileTab === 'tagged'
+    ? {
+        title: 'No tagged posts yet',
+        text: 'Posts that include your saved hashtags will appear here.',
+      }
+    : profileTab === 'saved'
+      ? {
+          title: 'No saved posts yet',
+          text: 'Save posts from the feed and they will appear here.',
+        }
+      : {
+          title: 'No posts yet',
+          text: 'Create your first post to start building your profile grid.',
+        };
+  const sellerLeaderboardStats = [
+    {
+      value: competitiveLoading
+        ? '...'
+        : competitiveProfile
+          ? `#${competitiveProfile.category_rank} / ${competitiveProfile.category_population}`
+          : '#3 / 45',
+      label: `${competitiveProfile?.category ? `${competitiveProfile.category[0].toUpperCase()}${competitiveProfile.category.slice(1)}` : 'Toy Shop'} Rank`,
+      icon: '🏆',
+    },
+    {
+      value: competitiveLoading
+        ? '...'
+        : competitiveProfile
+          ? competitiveProfile.monthly_successful_orders.toLocaleString()
+          : '1,240',
+      label: 'Monthly Orders',
+      icon: '📦',
+    },
+    {
+      value: competitiveLoading
+        ? '...'
+        : competitiveProfile?.seller_tier ?? 'Tier 4',
+      label: 'Seller Tier',
+      icon: '🎖️',
+    },
+  ] as const;
 
   const handleThemeSelect = (themeId: AppThemeId) => {
     if (themeId === CurrentThemeId) {
@@ -524,6 +683,26 @@ export default function ProfileScreen() {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 80 }}>
         {viewMode === 'profile' ? (
           <>
+            <View style={s.profileTopBar}>
+              <View style={s.profileTopBarLeft}>
+                {isSeller ? (
+                  <TouchableOpacity
+                    onPress={() => router.push('/seller/upload' as any)}
+                    style={s.postPlusBtn}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                  >
+                    <Text style={s.postPlusIcon}>➕</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              <View style={s.profileTopBarRight}>
+                <TouchableOpacity onPress={() => setViewMode('settings')} style={s.iconBtn} activeOpacity={0.85} accessibilityRole="button">
+                  <Text style={s.iconBtnText}>≡</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
             {/* Cover */}
             <TouchableOpacity
               activeOpacity={0.8}
@@ -576,9 +755,6 @@ export default function ProfileScreen() {
                 <TouchableOpacity onPress={() => setEditOpen(true)} style={s.editBtn}>
                   <Text style={s.editBtnText}>✏️ Edit Profile</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setViewMode('settings')} style={s.iconBtn} activeOpacity={0.85} accessibilityRole="button">
-              <Text style={s.iconBtnText}>≡</Text>
-                </TouchableOpacity>
               </View>
             </View>
 
@@ -594,12 +770,22 @@ export default function ProfileScreen() {
 
             {/* Stats */}
             <View style={s.statsRow}>
-              <StatBox
-                value={isSeller ? String(sellerShopProducts ?? 0) : String(followedShopIds.length)}
-                label={isSeller ? 'Products' : 'Following'}
-              />
-              <StatBox value={String(followedShopIds.length)} label={isSeller ? 'Followers' : 'Shops'} />
-              <StatBox value={`${profile.radius_km}`} label="km radius" />
+              {isSeller ? (
+                sellerLeaderboardStats.map(stat => (
+                  <StatBox
+                    key={stat.label}
+                    value={stat.value}
+                    label={stat.label}
+                    icon={stat.icon}
+                  />
+                ))
+              ) : (
+                <>
+                  <StatBox value={String(followedShopIds.length)} label="Following" icon="🤝" />
+                  <StatBox value={String(followedShopIds.length)} label="Shops" icon="🏪" />
+                  <StatBox value={`${profile.radius_km}`} label="km radius" icon="📍" />
+                </>
+              )}
             </View>
 
             {/* Tabs (Instagram-like) */}
@@ -628,16 +814,21 @@ export default function ProfileScreen() {
             </View>
 
             {/* Posts grid */}
-            <View style={s.gridWrap}>
-              {profileTab === 'posts' && profilePosts.length > 0
-                ? profilePosts.slice(0, 12).map((post, idx) => (
+            <View style={[s.gridWrap, { gap: gridGap }]}>
+              {isGridLoading ? (
+                <View style={s.gridState}>
+                  <ActivityIndicator color={Colors.orange} />
+                  <Text style={s.gridStateText}>Loading {profileTab}...</Text>
+                </View>
+              ) : activeGridPosts.length > 0
+                ? activeGridPosts.map((post, idx) => (
                     <TouchableOpacity
                       key={post.id ?? idx}
                       activeOpacity={0.9}
-                      style={s.gridItem}
+                      style={[s.gridItem, { width: gridItemWidth }]}
                       onPress={() => {
-                        const postId = post?.id ?? null;
-                        setActivePost(post);
+                        setPostViewerPosts(activeGridPosts);
+                        setActivePostIndex(idx);
                         setPostOpen(true);
                       }}
                     >
@@ -665,22 +856,16 @@ export default function ProfileScreen() {
                       </View>
                     </TouchableOpacity>
                   ))
-                : Array.from({ length: 12 }).map((_, idx) => (
-                    <TouchableOpacity
-                      key={`ph-${idx}`}
-                      activeOpacity={0.9}
-                      style={s.gridItem}
-                      onPress={() => {
-                      }}
-                    >
-                      <View style={s.gridThumb}>
-                        <Text style={s.gridEmoji}>{profileTab === 'posts' ? '📷' : profileTab === 'tagged' ? '🏷️' : '🔖'}</Text>
-                      </View>
-                    </TouchableOpacity>
-                  ))}
+                : (
+                  <View style={s.gridState}>
+                    <Text style={s.gridStateIcon}>{profileTab === 'posts' ? '📷' : profileTab === 'tagged' ? '🏷️' : '🔖'}</Text>
+                    <Text style={s.gridStateTitle}>{emptyState.title}</Text>
+                    <Text style={s.gridStateText}>{emptyState.text}</Text>
+                  </View>
+                )}
             </View>
 
-            <Text style={s.version}>CityConnect v1.0.0</Text>
+            <Text style={s.version}>Vedastya v1.0.0</Text>
           </>
         ) : (
           <>
@@ -749,7 +934,7 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-            <Text style={s.version}>CityConnect v1.0.0</Text>
+            <Text style={s.version}>Vedastya v1.0.0</Text>
           </>
         )}
       </ScrollView>
@@ -800,45 +985,95 @@ export default function ProfileScreen() {
         </TouchableOpacity>
       )}
 
-      {postOpen && activePost && (
-        <TouchableOpacity onPress={() => setPostOpen(false)} style={s.overlay} activeOpacity={1}>
-          <TouchableOpacity activeOpacity={1} style={s.sheet}>
-            <View>
-              <View style={m.handle} />
-              <Text style={[m.title, { marginBottom: 12 }]}>Post</Text>
-              {activePost.media_urls?.length ? (
-                <Image source={{ uri: activePost.media_urls[0] }} style={s.postImg} resizeMode="cover" />
-              ) : (() => {
-                const textMeta = parseTextCardCaption(activePost.caption);
-                if (!textMeta) return null;
-                return (
-                  <View style={[s.textCardBig, { backgroundColor: getTextBackground((textMeta as any).background) }]}>
-                    <Text
-                      style={[
-                        s.textCardBigText,
-                        getTextFontStyle((textMeta as any).fontStyle ?? (textMeta as any).style ?? 'classic'),
-                        { color: getTextColor((textMeta as any).textColor) },
-                      ]}
-                      numberOfLines={6}
-                    >
-                      {textMeta.text}
+      <Modal
+        visible={postOpen}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => setPostOpen(false)}
+      >
+        <View style={s.postViewerRoot}>
+          <View style={s.postViewerHeader}>
+            <TouchableOpacity onPress={() => setPostOpen(false)} style={s.postViewerClose} activeOpacity={0.85}>
+              <Text style={s.postViewerCloseText}>‹</Text>
+            </TouchableOpacity>
+            <View style={s.postViewerHeaderCopy}>
+              <Text style={s.postViewerTitle}>Posts</Text>
+              <Text style={s.postViewerSubtitle}>
+                {postViewerPosts.length
+                  ? `${activePostIndex + 1} of ${postViewerPosts.length} · newest to oldest`
+                  : 'No posts yet'}
+              </Text>
+            </View>
+            <View style={s.postViewerHeaderSpacer} />
+          </View>
+
+          <FlatList
+            data={visibleProfilePosts}
+            keyExtractor={(item, index) => item.id ?? `profile-post-${index}`}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={s.postViewerList}
+            renderItem={({ item }) => {
+              const textMeta = parseTextCardCaption(item.caption);
+              const displayCaption = textMeta ? textMeta.text : item.caption;
+              return (
+                <View style={s.viewerCard}>
+                  <View style={s.viewerHeader}>
+                    <View style={s.viewerAvatar}>
+                      {!item.shop_name && profile.avatar_url
+                        ? <Image source={{ uri: profile.avatar_url }} style={s.viewerAvatarImg} />
+                        : <Text style={s.viewerAvatarEmoji}>{item.shop_name ? '🏪' : roleEmoji}</Text>}
+                    </View>
+                    <View style={s.viewerHeaderText}>
+                      <Text style={s.viewerName}>{item.shop_name ?? profile.name}</Text>
+                      <Text style={s.viewerMeta}>{timeAgo(item.created_at)} · {formatPostDate(item.created_at)}</Text>
+                    </View>
+                  </View>
+
+                  {item.media_urls?.length ? (
+                    <View style={s.viewerMediaWrap}>
+                      <Image source={{ uri: item.media_urls[0] }} style={s.viewerImage} resizeMode="cover" />
+                      {item.media_type === 'video' && (
+                        <View style={s.viewerVideoBadge}>
+                          <Text style={s.viewerVideoBadgeText}>▶</Text>
+                        </View>
+                      )}
+                    </View>
+                  ) : textMeta ? (
+                    <View style={[s.viewerTextCard, { backgroundColor: getTextBackground(textMeta.background) }]}>
+                      <Text
+                        style={[
+                          s.viewerTextCardText,
+                          getTextFontStyle((textMeta as any).fontStyle ?? (textMeta as any).style ?? 'classic'),
+                          { color: getTextColor((textMeta as any).textColor) },
+                        ]}
+                      >
+                        {textMeta.text}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={s.viewerFallback}>
+                      <Text style={s.viewerFallbackEmoji}>📷</Text>
+                    </View>
+                  )}
+
+                  <View style={s.viewerCaptionBlock}>
+                    <Text style={s.viewerCaptionTitle}>{item.shop_name ?? profile.name}</Text>
+                    <Text style={s.viewerCaptionText}>
+                      {textMeta ? `${displayCaption}\n\nShared as a text update.` : displayCaption || 'No caption added.'}
                     </Text>
                   </View>
-                );
-              })()}
-              <Text style={{ color: Colors.text, marginTop: 10, fontSize: 13, fontWeight: '600' }}>
-                {activePost.shop_name ?? ''}
-              </Text>
-              <Text style={{ color: Colors.sub, marginTop: 6, fontSize: 13, lineHeight: 18 }}>
-                {activePost.caption ?? ''}
-              </Text>
-              <TouchableOpacity onPress={() => setPostOpen(false)} style={[m.btn, { marginTop: 14 }]}>
-                <Text style={m.btnText}>Close</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      )}
+                </View>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={s.viewerEmpty}>
+                <Text style={s.viewerEmptyTitle}>No posts yet</Text>
+                <Text style={s.viewerEmptyText}>When this account shares posts, they will appear here in posting order.</Text>
+              </View>
+            }
+          />
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -849,6 +1084,11 @@ const s = StyleSheet.create({
   coverImage:   { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
   coverOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: '#00000055' },
   coverEmoji:   { fontSize: 80, opacity: 0.25 },
+  profileTopBar:{ position: 'absolute', top: Platform.OS === 'web' ? 16 : 12, left: 16, right: 16, zIndex: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  profileTopBarLeft: { minWidth: 44, alignItems: 'flex-start' },
+  profileTopBarRight:{ minWidth: 44, alignItems: 'flex-end' },
+  postPlusBtn:   { width: 42, height: 42, borderRadius: 21, backgroundColor: Colors.orange, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FFFFFF22' },
+  postPlusIcon:  { fontSize: 24, color: Colors.white, fontWeight: '900' },
   avatarRow:    { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: -36 },
   avatarActions:{ flexDirection: 'row', alignItems: 'center', gap: 10 },
   avatar:       { width: 76, height: 76, borderRadius: 38, backgroundColor: Colors.card, borderWidth: 4, borderColor: Colors.bg, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
@@ -865,9 +1105,29 @@ const s = StyleSheet.create({
   city:         { fontSize: 13, color: Colors.sub, marginTop: 4 },
   bio:          { fontSize: 12, color: Colors.sub, marginTop: 6 },
   statsRow:     { flexDirection: 'row', marginHorizontal: 20, marginBottom: 8, gap: 10 },
-  stat:         { flex: 1, backgroundColor: Colors.card, borderRadius: 14, padding: 14, alignItems: 'center', borderWidth: 1, borderColor: Colors.border2 },
+  stat:         { flex: 1, backgroundColor: Colors.card, borderRadius: 14, paddingHorizontal: 14, paddingTop: 18, paddingBottom: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.border2, position: 'relative', minHeight: 112 },
+  statIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: Colors.orange + '18',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  statIcon:     { fontSize: 24 },
   statVal:      { fontSize: 22, fontWeight: '800', color: Colors.text },
-  statLabel:    { fontSize: 10, color: Colors.sub, marginTop: 2 },
+  statTooltip: {
+    position: 'absolute',
+    bottom: 10,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  statTooltipText: { fontSize: 10, color: Colors.sub, fontWeight: '700' },
   section:      { marginHorizontal: 20, marginTop: 20, backgroundColor: Colors.card, borderRadius: 20, borderWidth: 1, borderColor: Colors.border2, overflow: 'hidden' },
   sectionTitle: { fontSize: 12, fontWeight: '800', color: Colors.dim, letterSpacing: 0.6, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 6 },
   barHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
@@ -886,13 +1146,29 @@ const s = StyleSheet.create({
   profileTabIconActive: { color: Colors.orange },
   profileTabLabel: { marginTop: 2, fontSize: 11, color: Colors.sub, fontWeight: '700' },
   profileTabLabelActive: { color: Colors.text },
-  gridWrap: { paddingHorizontal: 20, flexDirection: 'row', flexWrap: 'wrap', gap: 1, marginBottom: 12 },
-  gridItem: { width: '33.33%', aspectRatio: 1, },
+  gridWrap: { paddingHorizontal: 20, flexDirection: 'row', flexWrap: 'wrap', marginBottom: 12 },
+  gridItem: { aspectRatio: 1 },
   gridThumb: { flex: 1, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border2, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   gridEmoji: { fontSize: 22, opacity: 0.55 },
   gridThumbImg: { width: '100%', height: '100%' },
   textCardThumb: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6, paddingVertical: 8 },
   textCardThumbText: { textAlign: 'center', paddingHorizontal: 2, fontWeight: '700' },
+  gridState: {
+    width: '100%',
+    minHeight: 180,
+    borderRadius: 20,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+    marginTop: 4,
+  },
+  gridStateIcon: { fontSize: 32, marginBottom: 10 },
+  gridStateTitle: { color: Colors.text, fontSize: 16, fontWeight: '800', marginBottom: 6 },
+  gridStateText: { color: Colors.sub, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   settingsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12 },
   settingsBackBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.card, borderWidth: 1.5, borderColor: Colors.border2, alignItems: 'center', justifyContent: 'center' },
   settingsBackText: { fontSize: 22, color: Colors.text, marginTop: -2 },
@@ -919,6 +1195,95 @@ const s = StyleSheet.create({
   postImg:      { width: '100%', height: 220, borderRadius: 14, marginTop: 2 },
   textCardBig: { width: '100%', height: 220, borderRadius: 14, marginTop: 2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
   textCardBigText: { textAlign: 'center', fontWeight: '700' },
+  postViewerRoot: { flex: 1, backgroundColor: Colors.bg },
+  postViewerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 56 : 18,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  postViewerClose: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.card,
+    borderWidth: 1.5,
+    borderColor: Colors.border2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  postViewerCloseText: { color: Colors.text, fontSize: 24, marginTop: -3 },
+  postViewerHeaderCopy: { flex: 1, paddingHorizontal: 12 },
+  postViewerTitle: { color: Colors.text, fontSize: 18, fontWeight: '800' },
+  postViewerSubtitle: { color: Colors.sub, fontSize: 12, marginTop: 2 },
+  postViewerHeaderSpacer: { width: 40 },
+  postViewerList: { paddingHorizontal: 16, paddingVertical: 16, gap: 18 },
+  viewerCard: {
+    backgroundColor: Colors.card,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    overflow: 'hidden',
+  },
+  viewerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
+  },
+  viewerAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  viewerAvatarImg: { width: '100%', height: '100%' },
+  viewerAvatarEmoji: { fontSize: 20 },
+  viewerHeaderText: { flex: 1, marginLeft: 12 },
+  viewerName: { color: Colors.text, fontSize: 15, fontWeight: '800' },
+  viewerMeta: { color: Colors.sub, fontSize: 12, marginTop: 2 },
+  viewerMediaWrap: { position: 'relative', backgroundColor: Colors.surface },
+  viewerImage: { width: '100%', height: 380 },
+  viewerVideoBadge: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: '#000A',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  viewerVideoBadgeText: { color: Colors.white, fontSize: 14, fontWeight: '800' },
+  viewerTextCard: {
+    minHeight: 380,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+  },
+  viewerTextCardText: { textAlign: 'center', fontWeight: '700' },
+  viewerFallback: {
+    height: 320,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerFallbackEmoji: { fontSize: 54, opacity: 0.55 },
+  viewerCaptionBlock: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 18 },
+  viewerCaptionTitle: { color: Colors.text, fontSize: 14, fontWeight: '800', marginBottom: 8 },
+  viewerCaptionText: { color: Colors.sub, fontSize: 14, lineHeight: 20 },
+  viewerEmpty: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 80 },
+  viewerEmptyTitle: { color: Colors.text, fontSize: 18, fontWeight: '800', marginBottom: 8 },
+  viewerEmptyText: { color: Colors.sub, fontSize: 14, textAlign: 'center', lineHeight: 20 },
 });
 
 const m = StyleSheet.create({

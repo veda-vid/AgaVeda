@@ -64,11 +64,17 @@ async function applySession(userId: string | undefined, set: (partial: Partial<A
   try {
     const profile = await getProfile(userId);
     // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-debug',hypothesisId:'H2',location:'stores/authStore.ts:applySession:profileLoaded',message:'auth profile loaded',data:{role:profile?.role ?? null,hasCity:!!profile?.city,hasLatLng:profile?.lat != null && profile?.lng != null,lat:profile?.lat ?? null,lng:profile?.lng ?? null,radius_km:profile?.radius_km ?? null,hasAvatarUrl:!!profile?.avatar_url},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    // #region agent log
     fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'auth-profile-debug',hypothesisId:'H5',location:'stores/authStore.ts:66',message:'profile loaded during auth session apply',data:{hasProfile:true,role:profile.role,hasAvatarUrl:!!profile.avatar_url,hasCity:!!profile.city},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
     set({ profile, isLoading: false, isInitialized: true });
     loadUserExtras(userId, set).catch(() => {});
   } catch {
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-debug',hypothesisId:'H2',location:'stores/authStore.ts:applySession:profileMissing',message:'auth profile missing during applySession',data:{hasUserId:!!userId},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // #region agent log
     fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'auth-profile-debug',hypothesisId:'H5',location:'stores/authStore.ts:70',message:'profile missing during auth session apply',data:{hasProfile:false},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
@@ -88,10 +94,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   initialize: async () => {
     if (get().isInitialized && authListenerAttached) return;
     set({ isLoading: true });
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:start',message:'auth initialize called',data:{isInitialized:get().isInitialized,authListenerAttached},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     try {
       if (isDemoAuthEnabled()) {
         authListenerAttached = true;
         const { data } = await getAuthSession();
+        // #region agent log
+        fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:demoAuthSession',message:'demo auth session fetched',data:{hasSession:!!data?.session,hasUser:!!data?.session?.user},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         await applySession(data.session?.user?.id, set);
         return;
       }
@@ -106,8 +118,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       }
 
       const { data: { session } } = await supabase.auth.getSession();
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:getSession',message:'supabase session fetched',data:{hasSession:!!session,hasUser:!!session?.user,roleHint:session?.user?.user_metadata?.role ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       await applySession(session?.user?.id, set);
     } catch {
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:catch',message:'auth initialize threw',data:{},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       set({ isLoading: false, isInitialized: true });
     }
   },

@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors } from '../../constants/theme';
+import { Colors, Fonts } from '../../constants/theme';
 import type { UserRole } from '../../types';
 
 const ROLES = [
@@ -19,7 +19,7 @@ export default function RoleScreen() {
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <View style={s.heroGlow} />
       <Text style={s.eyebrow}>Choose Your Experience</Text>
-      <Text style={s.title}>Welcome to{'\n'}CityConnect</Text>
+      <Text style={s.title}>Welcome to{'\n'}Vedastya</Text>
       <Text style={s.sub}>
         A local social-commerce app inspired by Instagram: discover, follow, post, sell and stay updated in your city.
       </Text>
@@ -69,7 +69,7 @@ const s = StyleSheet.create({
   content: { padding: 24, paddingTop: 70, paddingBottom: 40 },
   heroGlow: { position: 'absolute', top: 40, right: -20, width: 180, height: 180, borderRadius: 90, backgroundColor: Colors.orange + '16' },
   eyebrow: { fontSize: 13, color: Colors.orange, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 },
-  title:   { fontSize: 38, fontWeight: '800', color: Colors.text, marginBottom: 10, lineHeight: 42 },
+  title:   { fontSize: 38, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.text, marginBottom: 10, lineHeight: 42, letterSpacing: -0.4 },
   sub:     { fontSize: 15, color: Colors.sub, lineHeight: 22, marginBottom: 22 },
   previewCard: { backgroundColor: Colors.card, borderRadius: 20, borderWidth: 1, borderColor: Colors.border2, padding: 16, marginBottom: 28 },
   previewTitle: { fontSize: 15, fontWeight: '800', color: Colors.text, marginBottom: 6 },

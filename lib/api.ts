@@ -5,7 +5,7 @@ import { withTimeout, softFail } from './withTimeout';
 import { isDemoAuthEnabled } from './config';
 import type {
   Profile, Shop, Product, Post, ServiceProvider, Review, Comment, Ad,
-  Story, Reel, CartItem, SearchResult, Notification,
+  Story, Reel, CartItem, SearchResult, Notification, SellerCompetitiveProfile, CityNews, CityNewsComment,
 } from '../types';
 
 const PAGE = 10;
@@ -60,6 +60,14 @@ export const updateProfile = async (userId: string, updates: Partial<Profile>) =
     .single();
   if (error) throw error;
   return data;
+};
+
+export const getMySellerCompetitiveProfile = async (): Promise<SellerCompetitiveProfile | null> => {
+  if (isDemoAuthEnabled()) return null;
+  const { data, error } = await supabase.rpc('get_my_seller_competitive_profile');
+  if (error) throw error;
+  if (!Array.isArray(data) || !data.length) return null;
+  return data[0] as SellerCompetitiveProfile;
 };
 
 // ─── SHOPS ────────────────────────────────────────────────────────────
@@ -204,7 +212,7 @@ export const createProduct = async (product: Omit<Product, 'id' | 'created_at' |
 
 // ─── POSTS / FEED ─────────────────────────────────────────────────────
 
-async function feedFromPostsTable(page = 0): Promise<Post[]> {
+export async function feedFromPostsTable(page = 0): Promise<Post[]> {
   const { data, error } = await supabase
     .from('posts')
     .select('*, shop:shops(id,name,logo_url,category,avg_rating,is_open)')
@@ -278,6 +286,30 @@ export const unsavePost = async (userId: string, postId: string) => {
     .eq('user_id', userId)
     .eq('post_id', postId);
   if (error) throw error;
+};
+
+export const getSavedPosts = async (userId: string): Promise<Post[]> => {
+  const { data, error } = await supabase
+    .from('saved_posts')
+    .select('created_at, post:posts(*, shop:shops(id,name,logo_url,category,avg_rating,is_open))')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? [])
+    .map((row: any) => {
+      const post = row.post;
+      if (!post) return null;
+      return {
+        ...post,
+        shop_name: post.shop?.name,
+        shop_logo: post.shop?.logo_url,
+        shop_category: post.shop?.category,
+        shop_avg_rating: post.shop?.avg_rating,
+        shop_is_open: post.shop?.is_open,
+        saved_at: row.created_at,
+      };
+    })
+    .filter(Boolean) as Post[];
 };
 
 export const getComments = async (postId: string): Promise<Comment[]> => {
@@ -605,6 +637,190 @@ export const markNotificationsRead = async (userId: string) => {
     .eq('user_id', userId)
     .eq('is_read', false);
   if (error) throw error;
+};
+
+// ─── CITY NEWS ─────────────────────────────────────────────────────────────
+export const getCityNews = async (city: string, userId?: string, limit = 30): Promise<CityNews[]> => {
+  const { data, error } = await supabase
+    .from('city_news')
+    .select('*, author:author_id(id,name,avatar_url)')
+    .in('city', [city, 'National'])
+    .eq('is_published', true)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  const items = (data ?? []) as CityNews[];
+  if (!userId || !items.length) return items;
+
+  const newsIds = items.map(item => item.id);
+  const { data: likes, error: likesError } = await supabase
+    .from('city_news_likes')
+    .select('news_id')
+    .eq('user_id', userId)
+    .in('news_id', newsIds);
+  if (likesError) throw likesError;
+
+  const likedIds = new Set((likes ?? []).map((row: { news_id: string }) => row.news_id));
+  return items.map(item => ({ ...item, is_liked: likedIds.has(item.id) }));
+};
+
+export const adminListCityNews = async (limit = 50) => {
+  const { data, error } = await supabase
+    .from('city_news')
+    .select('*, author:author_id(id,name,avatar_url)')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data ?? [];
+};
+
+export const createCityNews = async (n: {
+  city: string;
+  category: string;
+  title: string;
+  body: string;
+  image_url?: string | null;
+  source_url?: string | null;
+  is_published?: boolean;
+  author_id?: string | null;
+}) => {
+  const { data, error } = await supabase
+    .from('city_news')
+    .insert({
+      ...n,
+      author_id: n.author_id ?? null,
+      is_published: n.is_published ?? false,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const updateCityNews = async (id: string, updates: {
+  title?: string;
+  body?: string;
+  image_url?: string | null;
+  source_url?: string | null;
+  category?: string;
+  city?: string;
+  is_published?: boolean;
+}) => {
+  const { data, error } = await supabase
+    .from('city_news')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const setCityNewsPublished = async (id: string, is_published: boolean) => {
+  const { data, error } = await supabase
+    .from('city_news')
+    .update({ is_published, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const likeCityNews = async (userId: string, newsId: string) => {
+  const { error } = await supabase
+    .from('city_news_likes')
+    .upsert({ user_id: userId, news_id: newsId }, { onConflict: 'user_id,news_id' });
+  if (error) throw error;
+};
+
+export const unlikeCityNews = async (userId: string, newsId: string) => {
+  const { error } = await supabase
+    .from('city_news_likes')
+    .delete()
+    .eq('user_id', userId)
+    .eq('news_id', newsId);
+  if (error) throw error;
+};
+
+export const getCityNewsComments = async (newsId: string): Promise<CityNewsComment[]> => {
+  const { data, error } = await withTimeout(
+    supabase
+      .from('city_news_comments')
+      .select('*, user:profiles(id,name,avatar_url)')
+      .eq('news_id', newsId)
+      .order('created_at', { ascending: true })
+      .limit(100),
+    API_MS,
+    'news-comments',
+  );
+  if (error) throw error;
+  return (data ?? []) as CityNewsComment[];
+};
+
+export const addCityNewsComment = async (userId: string, newsId: string, text: string) => {
+  const { data, error } = await supabase
+    .from('city_news_comments')
+    .insert({ user_id: userId, news_id: newsId, text: text.trim() })
+    .select('*, user:profiles(id,name,avatar_url)')
+    .single();
+  if (error) throw error;
+  return data as CityNewsComment;
+};
+
+export const adminListProfiles = async (limit = 100) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id,name,role,city,lat,lng,radius_km,is_verified,is_suspended,created_at,updated_at,email,phone,avatar_url')
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data ?? [];
+};
+
+export const adminSetProfileSuspended = async (profileId: string, is_suspended: boolean) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update({ is_suspended })
+    .eq('id', profileId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const adminListShops = async (limit = 100) => {
+  const { data, error } = await supabase
+    .from('shops')
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data ?? [];
+};
+
+export const adminSetShopActive = async (shopId: string, is_active: boolean) => {
+  const { data, error } = await supabase
+    .from('shops')
+    .update({ is_active })
+    .eq('id', shopId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const adminSetShopsActiveByOwner = async (ownerId: string, is_active: boolean) => {
+  const { data, error } = await supabase
+    .from('shops')
+    .update({ is_active })
+    .eq('owner_id', ownerId)
+    .select();
+  if (error) throw error;
+  return data ?? [];
 };
 
 export const getProductById = async (productId: string): Promise<Product> => {

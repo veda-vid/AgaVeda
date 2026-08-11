@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react';
 import { View, Text, Animated, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors } from '../../constants/theme';
+import { Colors, Fonts } from '../../constants/theme';
 
 export default function SplashScreen() {
   const router = useRouter();
@@ -23,7 +23,7 @@ export default function SplashScreen() {
     <View style={s.container}>
       <Animated.View style={{ opacity: fade, transform: [{ scale }], alignItems: 'center', gap: 16 }}>
         <Text style={s.icon}>🏙️</Text>
-        <Text style={s.title}>CityConnect</Text>
+        <Text style={s.title}>Vedastya</Text>
         <Text style={s.sub}>Your city. Your market.</Text>
       </Animated.View>
       <Animated.View style={[s.dot, { opacity: fade }]} />
@@ -40,7 +40,7 @@ const s = StyleSheet.create({
     gap: 0,
   },
   icon:  { fontSize: 72 },
-  title: { fontSize: 36, fontWeight: '800', color: Colors.orange, letterSpacing: -0.5 },
+  title: { fontSize: 36, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.orange, letterSpacing: -0.6 },
   sub:   { fontSize: 15, color: Colors.sub },
   dot:   { position: 'absolute', bottom: 60, width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.orange },
 });

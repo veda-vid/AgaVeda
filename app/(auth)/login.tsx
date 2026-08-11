@@ -15,7 +15,7 @@ import {
   isDemoAuthEnabled,
 } from '../../lib/supabase';
 import { useAuthStore } from '../../stores/authStore';
-import { Colors } from '../../constants/theme';
+import { Colors, Fonts } from '../../constants/theme';
 import { friendlyAuthNetworkError } from '../../lib/config';
 
 type Mode = 'signin' | 'signup' | 'forgot';
@@ -265,7 +265,7 @@ export default function LoginScreen() {
         </TouchableOpacity>
 
         <View style={s.brandBlock}>
-          <Text style={s.brand}>CityConnect</Text>
+          <Text style={s.brand}>Vedastya</Text>
           <Text style={s.tagline}>
             {mode === 'forgot'
               ? 'Reset your password'
@@ -419,7 +419,7 @@ const s = StyleSheet.create({
   back: { position: 'absolute', top: 48, left: 20, zIndex: 2, width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   backText: { color: Colors.text, fontSize: 32, lineHeight: 34, fontWeight: '300' },
   brandBlock: { alignItems: 'center', marginBottom: 28, marginTop: 24 },
-  brand: { fontSize: 42, fontWeight: '800', color: Colors.text, letterSpacing: -0.5, marginBottom: 10 },
+  brand: { fontSize: 42, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.text, letterSpacing: -0.6, marginBottom: 10 },
   tagline: { fontSize: 14, color: Colors.sub, textAlign: 'center', lineHeight: 20, paddingHorizontal: 12 },
   demoBanner: {
     marginTop: 14,

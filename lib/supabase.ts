@@ -79,7 +79,7 @@ export const getSupabase = (): SupabaseClient => {
     },
     global: {
       headers: {
-        'X-App-Name': 'CityConnect',
+        'X-App-Name': 'Vedastya',
         'X-App-Version': Constants.expoConfig?.version ?? '1.0.0',
       },
     },

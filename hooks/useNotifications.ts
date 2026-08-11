@@ -54,7 +54,7 @@ async function registerForPushNotifications(userId: string) {
 
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {
-      name: 'CityConnect',
+      name: 'Vedastya',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#FF5722',

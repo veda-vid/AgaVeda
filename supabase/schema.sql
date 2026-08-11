@@ -6,6 +6,7 @@
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "postgis";
+CREATE EXTENSION IF NOT EXISTS "pg_cron";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- for text search
 
 -- =============================================================
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   lng             DOUBLE PRECISION,
   radius_km       INT NOT NULL DEFAULT 5 CHECK (radius_km BETWEEN 1 AND 100),
   is_verified     BOOLEAN NOT NULL DEFAULT FALSE,
+  is_suspended    BOOLEAN NOT NULL DEFAULT FALSE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -60,7 +62,15 @@ CREATE TABLE IF NOT EXISTS public.shops (
   description      TEXT NOT NULL DEFAULT '',
   category         TEXT NOT NULL CHECK (category IN (
                      'grocery','electronics','fashion','food','pharmacy',
-                     'automobile','furniture','beauty','sports','books','other')),
+                     'automobile','furniture','beauty','sports','books','toys',
+                     'pet_supplies','home_decor','jewelry','watches','footwear',
+                     'baby_kids','stationery','gifts','florists','hardware',
+                     'kitchenware','mobile_accessories','computer_accessories',
+                     'appliances','bakery','cafe','restaurant','meat_seafood',
+                     'dairy','organic','liquor','eyewear','luggage','music',
+                     'gaming','art_crafts','fitness','medical_supplies',
+                     'industrial','gardening','cleaning_supplies','fabrics',
+                     'tailoring','salon','spa','bicycle','travel','religious','other')),
   logo_url         TEXT,
   cover_url        TEXT,
   address          TEXT NOT NULL DEFAULT '',
@@ -69,7 +79,12 @@ CREATE TABLE IF NOT EXISTS public.shops (
   lng              DOUBLE PRECISION NOT NULL,
   location         GEOGRAPHY(POINT, 4326),  -- PostGIS point for fast geo queries
   phone            TEXT NOT NULL,
+  email            TEXT NOT NULL DEFAULT '' CHECK (char_length(trim(email)) > 0),
   whatsapp         TEXT,
+  website          TEXT,
+  instagram        TEXT,
+  open_time        TEXT NOT NULL DEFAULT '' CHECK (char_length(trim(open_time)) > 0),
+  close_time       TEXT NOT NULL DEFAULT '' CHECK (char_length(trim(close_time)) > 0),
   is_open          BOOLEAN NOT NULL DEFAULT TRUE,
   is_verified      BOOLEAN NOT NULL DEFAULT FALSE,
   is_active        BOOLEAN NOT NULL DEFAULT TRUE,
@@ -181,6 +196,49 @@ CREATE TABLE IF NOT EXISTS public.saved_posts (
 );
 
 -- =============================================================
+-- ORDERS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS public.orders (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  buyer_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  shop_id      UUID NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+  status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','processing','completed','cancelled','failed')),
+  total_amount NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+  placed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_orders_shop_completed ON public.orders(shop_id, completed_at DESC);
+CREATE INDEX idx_orders_shop_status ON public.orders(shop_id, status);
+CREATE INDEX idx_orders_buyer_completed ON public.orders(buyer_id, completed_at DESC);
+
+-- =============================================================
+-- SELLER COMPETITIVE SCORES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS public.seller_competitive_scores (
+  seller_id                    UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  shop_id                      UUID NOT NULL UNIQUE REFERENCES public.shops(id) ON DELETE CASCADE,
+  city                         TEXT NOT NULL,
+  category                     TEXT NOT NULL,
+  review_score_raw             NUMERIC(10,2) NOT NULL DEFAULT 0,
+  review_points                NUMERIC(6,2) NOT NULL DEFAULT 0 CHECK (review_points BETWEEN 0 AND 40),
+  monthly_successful_orders    INT NOT NULL DEFAULT 0 CHECK (monthly_successful_orders >= 0),
+  order_points                 NUMERIC(6,2) NOT NULL DEFAULT 0 CHECK (order_points BETWEEN 0 AND 40),
+  repeat_buyer_pct             NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (repeat_buyer_pct BETWEEN 0 AND 100),
+  retention_points             NUMERIC(6,2) NOT NULL DEFAULT 0 CHECK (retention_points BETWEEN 0 AND 20),
+  composite_competitive_score  NUMERIC(6,2) NOT NULL DEFAULT 0 CHECK (composite_competitive_score BETWEEN 0 AND 100),
+  category_rank                INT NOT NULL DEFAULT 1 CHECK (category_rank >= 1),
+  category_population          INT NOT NULL DEFAULT 1 CHECK (category_population >= 1),
+  seller_tier                  TEXT NOT NULL DEFAULT 'Tier 1'
+                                 CHECK (seller_tier IN ('Tier 1','Tier 2','Tier 3','Tier 4')),
+  calculated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_seller_scores_city_category_rank
+  ON public.seller_competitive_scores(city, category, category_rank, composite_competitive_score DESC);
+
+-- =============================================================
 -- COMMENTS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS public.comments (
@@ -207,6 +265,212 @@ $$;
 CREATE TRIGGER post_comment_count_trigger
   AFTER INSERT OR DELETE ON public.comments
   FOR EACH ROW EXECUTE FUNCTION update_post_comment_count();
+
+-- =============================================================
+-- SELLER COMPETITIVE SCORING
+-- =============================================================
+CREATE OR REPLACE FUNCTION public.refresh_seller_competitive_scores()
+RETURNS VOID
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  WITH seller_inputs AS (
+    SELECT
+      sh.owner_id AS seller_id,
+      sh.id AS shop_id,
+      sh.city,
+      sh.category,
+      (COALESCE(sh.avg_rating, 0) * COALESCE(sh.total_reviews, 0))::NUMERIC(10,2) AS review_score_raw,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM public.orders o
+        WHERE o.shop_id = sh.id
+          AND o.status = 'completed'
+          AND COALESCE(o.completed_at, o.placed_at) >= NOW() - INTERVAL '30 days'
+      ), 0)::INT AS monthly_successful_orders,
+      COALESCE((
+        WITH buyer_window AS (
+          SELECT o.buyer_id, COUNT(*) AS order_count
+          FROM public.orders o
+          WHERE o.shop_id = sh.id
+            AND o.status = 'completed'
+            AND COALESCE(o.completed_at, o.placed_at) >= NOW() - INTERVAL '90 days'
+          GROUP BY o.buyer_id
+        )
+        SELECT
+          CASE
+            WHEN COUNT(*) = 0 THEN 0
+            ELSE ROUND(
+              (
+                (COUNT(*) FILTER (WHERE order_count > 1))::NUMERIC
+                / COUNT(*)::NUMERIC
+              ) * 100,
+              2
+            )
+          END
+        FROM buyer_window
+      ), 0)::NUMERIC(5,2) AS repeat_buyer_pct
+    FROM public.shops sh
+    JOIN public.profiles p ON p.id = sh.owner_id
+    WHERE p.role = 'seller'
+      AND sh.is_active = TRUE
+  ),
+  normalized AS (
+    SELECT
+      seller_inputs.*,
+      CASE
+        WHEN MAX(review_score_raw) OVER (PARTITION BY category) > 0
+          THEN ROUND((review_score_raw / MAX(review_score_raw) OVER (PARTITION BY category)) * 40, 2)
+        ELSE 0
+      END AS review_points,
+      CASE
+        WHEN MAX(monthly_successful_orders) OVER (PARTITION BY category) > 0
+          THEN ROUND(
+            (
+              monthly_successful_orders::NUMERIC
+              / (MAX(monthly_successful_orders) OVER (PARTITION BY category))::NUMERIC
+            ) * 40,
+            2
+          )
+        ELSE 0
+      END AS order_points,
+      CASE
+        WHEN MAX(repeat_buyer_pct) OVER (PARTITION BY category) > 0
+          THEN ROUND(
+            (repeat_buyer_pct / (MAX(repeat_buyer_pct) OVER (PARTITION BY category))) * 20,
+            2
+          )
+        ELSE 0
+      END AS retention_points
+    FROM seller_inputs
+  ),
+  ranked AS (
+    SELECT
+      normalized.*,
+      ROUND(LEAST(100, review_points + order_points + retention_points), 2) AS composite_competitive_score,
+      ROW_NUMBER() OVER (
+        PARTITION BY city, category
+        ORDER BY
+          (review_points + order_points + retention_points) DESC,
+          review_score_raw DESC,
+          monthly_successful_orders DESC,
+          repeat_buyer_pct DESC,
+          shop_id
+      ) AS category_rank,
+      COUNT(*) OVER (PARTITION BY city, category) AS category_population
+    FROM normalized
+  )
+  INSERT INTO public.seller_competitive_scores (
+    seller_id,
+    shop_id,
+    city,
+    category,
+    review_score_raw,
+    review_points,
+    monthly_successful_orders,
+    order_points,
+    repeat_buyer_pct,
+    retention_points,
+    composite_competitive_score,
+    category_rank,
+    category_population,
+    seller_tier,
+    calculated_at
+  )
+  SELECT
+    seller_id,
+    shop_id,
+    city,
+    category,
+    review_score_raw,
+    review_points,
+    monthly_successful_orders,
+    order_points,
+    repeat_buyer_pct,
+    retention_points,
+    composite_competitive_score,
+    category_rank,
+    category_population,
+    CASE
+      WHEN composite_competitive_score <= 25 THEN 'Tier 1'
+      WHEN composite_competitive_score <= 50 THEN 'Tier 2'
+      WHEN composite_competitive_score <= 75 THEN 'Tier 3'
+      ELSE 'Tier 4'
+    END AS seller_tier,
+    NOW()
+  FROM ranked
+  ON CONFLICT (seller_id) DO UPDATE
+  SET
+    shop_id = EXCLUDED.shop_id,
+    city = EXCLUDED.city,
+    category = EXCLUDED.category,
+    review_score_raw = EXCLUDED.review_score_raw,
+    review_points = EXCLUDED.review_points,
+    monthly_successful_orders = EXCLUDED.monthly_successful_orders,
+    order_points = EXCLUDED.order_points,
+    repeat_buyer_pct = EXCLUDED.repeat_buyer_pct,
+    retention_points = EXCLUDED.retention_points,
+    composite_competitive_score = EXCLUDED.composite_competitive_score,
+    category_rank = EXCLUDED.category_rank,
+    category_population = EXCLUDED.category_population,
+    seller_tier = EXCLUDED.seller_tier,
+    calculated_at = EXCLUDED.calculated_at;
+
+  DELETE FROM public.seller_competitive_scores sc
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM public.shops sh
+    JOIN public.profiles p ON p.id = sh.owner_id
+    WHERE sh.owner_id = sc.seller_id
+      AND sh.id = sc.shop_id
+      AND p.role = 'seller'
+      AND sh.is_active = TRUE
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_my_seller_competitive_profile()
+RETURNS TABLE (
+  seller_id UUID,
+  shop_id UUID,
+  city TEXT,
+  category TEXT,
+  review_score_raw NUMERIC,
+  review_points NUMERIC,
+  monthly_successful_orders INT,
+  order_points NUMERIC,
+  repeat_buyer_pct NUMERIC,
+  retention_points NUMERIC,
+  composite_competitive_score NUMERIC,
+  category_rank INT,
+  category_population INT,
+  seller_tier TEXT,
+  calculated_at TIMESTAMPTZ
+)
+LANGUAGE sql
+SET search_path = public
+AS $$
+  SELECT
+    seller_id,
+    shop_id,
+    city,
+    category,
+    review_score_raw,
+    review_points,
+    monthly_successful_orders,
+    order_points,
+    repeat_buyer_pct,
+    retention_points,
+    composite_competitive_score,
+    category_rank,
+    category_population,
+    seller_tier,
+    calculated_at
+  FROM public.seller_competitive_scores
+  WHERE seller_id = auth.uid()
+  LIMIT 1;
+$$;
 
 -- =============================================================
 -- SHOP FOLLOWERS
@@ -350,6 +614,78 @@ CREATE TABLE IF NOT EXISTS public.notifications (
 CREATE INDEX idx_notifications_user ON public.notifications(user_id, is_read);
 
 -- =============================================================
+-- CITY NEWS (super-admin managed “city newspaper”)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS public.city_news (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  city           TEXT NOT NULL,
+  category       TEXT NOT NULL CHECK (category IN ('event','rates','weather','alerts','general')),
+  title          TEXT NOT NULL,
+  body           TEXT NOT NULL DEFAULT '',
+  image_url      TEXT,
+  source_url     TEXT,
+  is_published   BOOLEAN NOT NULL DEFAULT FALSE,
+  author_id      UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  total_likes    INT NOT NULL DEFAULT 0,
+  total_comments INT NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_city_news_city_published ON public.city_news(city, is_published, created_at DESC);
+CREATE INDEX idx_city_news_created ON public.city_news(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.city_news_likes (
+  user_id    UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  news_id    UUID NOT NULL REFERENCES public.city_news(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, news_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.city_news_comments (
+  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  news_id    UUID NOT NULL REFERENCES public.city_news(id) ON DELETE CASCADE,
+  user_id    UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  text       TEXT NOT NULL CHECK (char_length(trim(text)) > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_city_news_likes_news ON public.city_news_likes(news_id);
+CREATE INDEX idx_city_news_comments_news ON public.city_news_comments(news_id, created_at);
+
+CREATE OR REPLACE FUNCTION increment_city_news_like_count()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE public.city_news SET total_likes = total_likes + 1 WHERE id = NEW.news_id;
+  ELSIF TG_OP = 'DELETE' THEN
+    UPDATE public.city_news SET total_likes = GREATEST(0, total_likes - 1) WHERE id = OLD.news_id;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS city_news_like_count_trigger ON public.city_news_likes;
+CREATE TRIGGER city_news_like_count_trigger
+  AFTER INSERT OR DELETE ON public.city_news_likes
+  FOR EACH ROW EXECUTE FUNCTION increment_city_news_like_count();
+
+CREATE OR REPLACE FUNCTION increment_city_news_comment_count()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE public.city_news SET total_comments = total_comments + 1 WHERE id = NEW.news_id;
+  ELSIF TG_OP = 'DELETE' THEN
+    UPDATE public.city_news SET total_comments = GREATEST(0, total_comments - 1) WHERE id = OLD.news_id;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS city_news_comment_count_trigger ON public.city_news_comments;
+CREATE TRIGGER city_news_comment_count_trigger
+  AFTER INSERT OR DELETE ON public.city_news_comments
+  FOR EACH ROW EXECUTE FUNCTION increment_city_news_comment_count();
+
+-- =============================================================
 -- GEOGRAPHIC RPC FUNCTIONS
 -- =============================================================
 
@@ -450,3 +786,18 @@ CREATE OR REPLACE FUNCTION increment_ad_clicks(ad_id UUID)
 RETURNS VOID LANGUAGE sql AS $$
   UPDATE public.ads SET clicks = clicks + 1 WHERE id = ad_id;
 $$;
+
+SELECT public.refresh_seller_competitive_scores();
+
+DO $cron_job$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'refresh-seller-competitive-scores') THEN
+    PERFORM cron.unschedule('refresh-seller-competitive-scores');
+  END IF;
+  PERFORM cron.schedule(
+    'refresh-seller-competitive-scores',
+    '0 2 * * *',
+    'SELECT public.refresh_seller_competitive_scores();'
+  );
+END
+$cron_job$;

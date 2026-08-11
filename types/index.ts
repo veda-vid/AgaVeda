@@ -15,6 +15,7 @@ export interface Profile {
   lng: number | null;
   radius_km: number;          // discovery radius
   is_verified: boolean;
+  is_suspended: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -32,7 +33,12 @@ export interface Shop {
   lat: number;
   lng: number;
   phone: string;
+  email: string;
   whatsapp: string | null;
+  website: string | null;
+  instagram: string | null;
+  open_time: string;
+  close_time: string;
   is_open: boolean;
   is_verified: boolean;
   is_active: boolean;
@@ -57,6 +63,45 @@ export type ShopCategory =
   | 'beauty'
   | 'sports'
   | 'books'
+  | 'toys'
+  | 'pet_supplies'
+  | 'home_decor'
+  | 'jewelry'
+  | 'watches'
+  | 'footwear'
+  | 'baby_kids'
+  | 'stationery'
+  | 'gifts'
+  | 'florists'
+  | 'hardware'
+  | 'kitchenware'
+  | 'mobile_accessories'
+  | 'computer_accessories'
+  | 'appliances'
+  | 'bakery'
+  | 'cafe'
+  | 'restaurant'
+  | 'meat_seafood'
+  | 'dairy'
+  | 'organic'
+  | 'liquor'
+  | 'eyewear'
+  | 'luggage'
+  | 'music'
+  | 'gaming'
+  | 'art_crafts'
+  | 'fitness'
+  | 'medical_supplies'
+  | 'industrial'
+  | 'gardening'
+  | 'cleaning_supplies'
+  | 'fabrics'
+  | 'tailoring'
+  | 'salon'
+  | 'spa'
+  | 'bicycle'
+  | 'travel'
+  | 'religious'
   | 'other';
 
 export interface Product {
@@ -97,6 +142,24 @@ export interface Post {
   product?: Product;
   is_liked?: boolean;
   is_saved?: boolean;
+}
+
+export interface SellerCompetitiveProfile {
+  seller_id: string;
+  shop_id: string;
+  city: string;
+  category: ShopCategory;
+  review_score_raw: number;
+  review_points: number;
+  monthly_successful_orders: number;
+  order_points: number;
+  repeat_buyer_pct: number;
+  retention_points: number;
+  composite_competitive_score: number;
+  category_rank: number;
+  category_population: number;
+  seller_tier: 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4';
+  calculated_at: string;
 }
 
 export interface ServiceProvider {
@@ -184,6 +247,35 @@ export interface Notification {
   data: Record<string, unknown>;
   is_read: boolean;
   created_at: string;
+}
+
+export type CityNewsCategory = 'event' | 'rates' | 'weather' | 'alerts' | 'general';
+
+export interface CityNews {
+  id: string;
+  city: string;
+  category: CityNewsCategory;
+  title: string;
+  body: string;
+  image_url: string | null;
+  source_url: string | null;
+  is_published: boolean;
+  author_id: string | null;
+  total_likes: number;
+  total_comments: number;
+  created_at: string;
+  updated_at: string;
+  author?: Profile | null;
+  is_liked?: boolean;
+}
+
+export interface CityNewsComment {
+  id: string;
+  news_id: string;
+  user_id: string;
+  text: string;
+  created_at: string;
+  user?: Profile | null;
 }
 
 export interface Story {

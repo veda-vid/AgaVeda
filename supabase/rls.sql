@@ -11,12 +11,17 @@ ALTER TABLE public.products          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.posts             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.post_likes        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.saved_posts       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.seller_competitive_scores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comments          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.shop_followers    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.service_providers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ads               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.city_news        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.city_news_likes  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.city_news_comments ENABLE ROW LEVEL SECURITY;
 
 -- =============================================================
 -- PROFILES
@@ -35,6 +40,14 @@ CREATE POLICY "profiles_update_own"
   TO authenticated
   USING (auth.uid() = id)
   WITH CHECK (auth.uid() = id);
+
+-- Super admin can update moderation flags (e.g. suspend users)
+DROP POLICY IF EXISTS "profiles_update_super_admin" ON public.profiles;
+CREATE POLICY "profiles_update_super_admin"
+  ON public.profiles FOR UPDATE
+  TO authenticated
+  USING ((SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin')
+  WITH CHECK ((SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin');
 
 -- Block role elevation: only super_admin can set super_admin
 DROP POLICY IF EXISTS "profiles_no_role_escalation" ON public.profiles;
@@ -56,7 +69,11 @@ DROP POLICY IF EXISTS "shops_select_all" ON public.shops;
 CREATE POLICY "shops_select_all"
   ON public.shops FOR SELECT
   TO authenticated
-  USING (is_active = true OR owner_id = auth.uid());
+  USING (
+    is_active = true
+    OR owner_id = auth.uid()
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 -- Re-run safe: remove old policies so we don't keep stale logic
 DROP POLICY IF EXISTS "shops_insert_own" ON public.shops;
@@ -67,19 +84,38 @@ CREATE POLICY "shops_insert_own"
   ON public.shops FOR INSERT
   TO authenticated
   WITH CHECK (
-    owner_id = auth.uid()
+    (
+      owner_id = auth.uid()
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
   );
 
 CREATE POLICY "shops_update_own"
   ON public.shops FOR UPDATE
   TO authenticated
-  USING (owner_id = auth.uid())
-  WITH CHECK (owner_id = auth.uid());
+  USING (
+    (
+      owner_id = auth.uid()
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  )
+  WITH CHECK (
+    (
+      owner_id = auth.uid()
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 CREATE POLICY "shops_delete_own"
   ON public.shops FOR DELETE
   TO authenticated
-  USING (owner_id = auth.uid());
+  USING (
+    owner_id = auth.uid()
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 -- =============================================================
 -- PRODUCTS
@@ -91,6 +127,7 @@ CREATE POLICY "products_select_available"
   USING (
     is_available = true
     OR shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
   );
 
 DROP POLICY IF EXISTS "products_insert_shop_owner" ON public.products;
@@ -98,21 +135,43 @@ CREATE POLICY "products_insert_shop_owner"
   ON public.products FOR INSERT
   TO authenticated
   WITH CHECK (
-    shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+    (
+      shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
   );
 
 DROP POLICY IF EXISTS "products_update_shop_owner" ON public.products;
 CREATE POLICY "products_update_shop_owner"
   ON public.products FOR UPDATE
   TO authenticated
-  USING (shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid()))
-  WITH CHECK (shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid()));
+  USING (
+    (
+      shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  )
+  WITH CHECK (
+    (
+      shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 DROP POLICY IF EXISTS "products_delete_shop_owner" ON public.products;
 CREATE POLICY "products_delete_shop_owner"
   ON public.products FOR DELETE
   TO authenticated
-  USING (shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid()));
+  USING (
+    (
+      shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 -- =============================================================
 -- POSTS
@@ -121,14 +180,21 @@ DROP POLICY IF EXISTS "posts_select_all" ON public.posts;
 CREATE POLICY "posts_select_all"
   ON public.posts FOR SELECT
   TO authenticated
-  USING (true);
+  USING (
+    shop_id IN (SELECT id FROM public.shops WHERE is_active = true)
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 DROP POLICY IF EXISTS "posts_insert_shop_owner" ON public.posts;
 CREATE POLICY "posts_insert_shop_owner"
   ON public.posts FOR INSERT
   TO authenticated
   WITH CHECK (
-    shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+    (
+      shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+      AND (SELECT is_suspended FROM public.profiles WHERE id = auth.uid()) = false
+    )
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
   );
 
 DROP POLICY IF EXISTS "posts_update_shop_owner" ON public.posts;
@@ -188,6 +254,59 @@ CREATE POLICY "saved_delete_own"
   ON public.saved_posts FOR DELETE
   TO authenticated
   USING (user_id = auth.uid());
+
+-- =============================================================
+-- ORDERS
+-- =============================================================
+DROP POLICY IF EXISTS "orders_select_buyer_seller_admin" ON public.orders;
+CREATE POLICY "orders_select_buyer_seller_admin"
+  ON public.orders FOR SELECT
+  TO authenticated
+  USING (
+    buyer_id = auth.uid()
+    OR shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
+
+DROP POLICY IF EXISTS "orders_insert_buyer_own" ON public.orders;
+CREATE POLICY "orders_insert_buyer_own"
+  ON public.orders FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    buyer_id = auth.uid()
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
+
+DROP POLICY IF EXISTS "orders_update_seller_admin" ON public.orders;
+CREATE POLICY "orders_update_seller_admin"
+  ON public.orders FOR UPDATE
+  TO authenticated
+  USING (
+    shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  )
+  WITH CHECK (
+    shop_id IN (SELECT id FROM public.shops WHERE owner_id = auth.uid())
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
+
+DROP POLICY IF EXISTS "orders_delete_admin_only" ON public.orders;
+CREATE POLICY "orders_delete_admin_only"
+  ON public.orders FOR DELETE
+  TO authenticated
+  USING ((SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin');
+
+-- =============================================================
+-- SELLER COMPETITIVE SCORES
+-- =============================================================
+DROP POLICY IF EXISTS "seller_scores_select_own_or_admin" ON public.seller_competitive_scores;
+CREATE POLICY "seller_scores_select_own_or_admin"
+  ON public.seller_competitive_scores FOR SELECT
+  TO authenticated
+  USING (
+    seller_id = auth.uid()
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
 
 -- =============================================================
 -- COMMENTS
@@ -351,6 +470,64 @@ CREATE POLICY "notifications_update_own"
 -- So no INSERT policy for authenticated users
 
 -- =============================================================
+-- CITY NEWS
+-- =============================================================
+DROP POLICY IF EXISTS "city_news_select" ON public.city_news;
+CREATE POLICY "city_news_select"
+  ON public.city_news FOR SELECT
+  TO authenticated
+  USING (
+    is_published = true
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
+
+DROP POLICY IF EXISTS "city_news_write_super_admin" ON public.city_news;
+CREATE POLICY "city_news_write_super_admin"
+  ON public.city_news FOR ALL
+  TO authenticated
+  USING ((SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin')
+  WITH CHECK ((SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin');
+
+DROP POLICY IF EXISTS "city_news_likes_select_all" ON public.city_news_likes;
+CREATE POLICY "city_news_likes_select_all"
+  ON public.city_news_likes FOR SELECT
+  TO authenticated
+  USING (true);
+
+DROP POLICY IF EXISTS "city_news_likes_insert_own" ON public.city_news_likes;
+CREATE POLICY "city_news_likes_insert_own"
+  ON public.city_news_likes FOR INSERT
+  TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "city_news_likes_delete_own" ON public.city_news_likes;
+CREATE POLICY "city_news_likes_delete_own"
+  ON public.city_news_likes FOR DELETE
+  TO authenticated
+  USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "city_news_comments_select_all" ON public.city_news_comments;
+CREATE POLICY "city_news_comments_select_all"
+  ON public.city_news_comments FOR SELECT
+  TO authenticated
+  USING (true);
+
+DROP POLICY IF EXISTS "city_news_comments_insert_own" ON public.city_news_comments;
+CREATE POLICY "city_news_comments_insert_own"
+  ON public.city_news_comments FOR INSERT
+  TO authenticated
+  WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "city_news_comments_delete_own_or_admin" ON public.city_news_comments;
+CREATE POLICY "city_news_comments_delete_own_or_admin"
+  ON public.city_news_comments FOR DELETE
+  TO authenticated
+  USING (
+    user_id = auth.uid()
+    OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'super_admin'
+  );
+
+-- =============================================================
 -- STORAGE BUCKET POLICIES
 -- Run in: Supabase Dashboard → Storage → Policies
 -- Bucket name: cityconnect
@@ -400,3 +577,10 @@ CREATE POLICY "storage_objects_delete_cityconnect"
     bucket_id = 'cityconnect'
     AND split_part(name, '/', 2) = auth.uid()::text
   );
+
+-- =============================================================
+-- FUNCTION EXECUTION
+-- =============================================================
+REVOKE EXECUTE ON FUNCTION public.get_my_seller_competitive_profile() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.get_my_seller_competitive_profile() FROM anon;
+GRANT EXECUTE ON FUNCTION public.get_my_seller_competitive_profile() TO authenticated;

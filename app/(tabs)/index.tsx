@@ -4,6 +4,7 @@ import {
   View, Text, FlatList, TouchableOpacity, TextInput,
   Image, ActivityIndicator, RefreshControl, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
@@ -11,12 +12,23 @@ import { useCartStore } from '../../stores/cartStore';
 import {
   getFeed, getFollowingFeed, likePost, unlikePost, savePost, unsavePost,
   getComments, addComment, getStories, createStory, getReels, createReel,
-  globalSearch, getShopByOwner, uploadImage, createPost,
+  getShopByOwner, uploadImage, createPost, feedFromPostsTable,
 } from '../../lib/api';
-import { Colors } from '../../constants/theme';
-import type { Story, Reel, SearchResult } from '../../types';
+import { getSupabaseConfig } from '../../lib/config';
+import { Colors, Fonts } from '../../constants/theme';
+import type { Story, Reel } from '../../types';
 
 const W = Dimensions.get('window').width;
+const { url: SUPABASE_URL } = getSupabaseConfig();
+
+function resolveMediaUrl(value?: string | null) {
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  if (!SUPABASE_URL) return value;
+  const normalizedBase = SUPABASE_URL.replace(/\/$/, '');
+  if (value.startsWith('/')) return `${normalizedBase}${value}`;
+  return `${normalizedBase}/${value.replace(/^\//, '')}`;
+}
 
 const TEXT_CARD_BACKGROUNDS = [
   { id: 'sunset', color: '#E94F37' },
@@ -69,6 +81,7 @@ function PostCard({
   isBuyer: boolean;
   onAddToCart?: (productId: string, shopId: string) => void;
 }) {
+  const shopLogoUri = resolveMediaUrl(post.shop_logo);
   const [liked, setLiked] = useState(post.is_liked ?? false);
   const [saved, setSaved] = useState(post.is_saved ?? false);
   const [likes, setLikes] = useState(post.total_likes ?? 0);
@@ -118,7 +131,11 @@ function PostCard({
   return (
     <View style={pf.card}>
       <View style={pf.header}>
-        <View style={pf.shopIcon}><Text style={pf.shopEmoji}>{post.shop_logo ?? '🏪'}</Text></View>
+        <View style={pf.shopIcon}>
+          {shopLogoUri
+            ? <Image source={{ uri: shopLogoUri }} style={pf.shopIconImage} resizeMode="cover" />
+            : <Text style={pf.shopEmoji}>🏪</Text>}
+        </View>
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Text style={pf.shopName}>{post.shop_name}</Text>
@@ -245,8 +262,9 @@ function PostCard({
 
 export default function FeedScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ create_menu?: string }>();
+  const params = useLocalSearchParams<{ create_menu?: string; refresh_feed?: string }>();
   const profile = useAuthStore(s => s.profile);
+  const insets = useSafeAreaInsets();
   const followedShopIds = useAuthStore(s => s.followedShopIds);
   const notifications = useAuthStore(s => s.notifications);
   const addNotification = useAuthStore(s => s.addNotification);
@@ -260,9 +278,6 @@ export default function FeedScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
   const [feedMode, setFeedMode] = useState<'nearby' | 'following'>('nearby');
   const [showNotifications, setShowNotifications] = useState(false);
   const [showStoryComposer, setShowStoryComposer] = useState(false);
@@ -293,6 +308,7 @@ export default function FeedScreen() {
 
   const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
   const isBuyer = profile?.role === 'buyer';
+  const plusColor = Colors.white;
 
   feedModeRef.current = feedMode;
   followedRef.current = followedShopIds;
@@ -315,14 +331,26 @@ export default function FeedScreen() {
       const p = reset ? 0 : pageRef.current;
       const mode = feedModeRef.current;
       let data: any[] = [];
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'feed-debug',hypothesisId:'H1',location:'app/(tabs)/index.tsx:FeedScreen:load:start',message:'feed load start',data:{reset,page:p,feedMode:mode,isBuyer:!!isBuyer,isSeller:!!isSeller,lat:profile.lat ?? null,lng:profile.lng ?? null,radius_km:profile.radius_km ?? null,followedShopCount:followedShopIds?.length ?? 0},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       if (mode === 'following' && isBuyer) {
         data = await getFollowingFeed(profile.id, p, followedRef.current);
       } else {
-        data = await getFeed(profile.lat ?? 19.076, profile.lng ?? 72.8777, profile.radius_km ?? 5, p);
+        // If we don't have lat/lng yet, do not query using hardcoded defaults
+        // (it will return unrelated/stale posts).
+        if (profile.lat == null || profile.lng == null) {
+          data = await feedFromPostsTable(p);
+        } else {
+          data = await getFeed(profile.lat, profile.lng, profile.radius_km ?? 5, p);
+        }
       }
       const rows = Array.isArray(data) ? data : [];
 
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'feed-debug',hypothesisId:'H2',location:'app/(tabs)/index.tsx:FeedScreen:load:result',message:'feed load result',data:{reset,rowsCount:rows.length,topIds:rows.slice(0,5).map(r=>r.id),topCreatedAt:rows.slice(0,5).map(r=>r.created_at ?? null)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       setPosts(prev => (reset ? rows : [...prev, ...rows]));
       setHasMore(rows.length >= 10);
       pageRef.current = p + 1;
@@ -375,6 +403,20 @@ export default function FeedScreen() {
     }
   }, [params.create_menu, isSeller, router]);
 
+  // If we were navigated back from a seller action, force a fresh feed load.
+  useEffect(() => {
+    const shouldRefresh = String(params.refresh_feed ?? '') === '1';
+    if (!shouldRefresh) return;
+    if (!profile) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'feed-debug',hypothesisId:'H1',location:'app/(tabs)/index.tsx:FeedScreen:refresh_feed',message:'received refresh_feed param',data:{refresh_feed:params.refresh_feed,feedMode:feedModeRef.current,lat:profile.lat ?? null,lng:profile.lng ?? null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    load(true).finally(() => {
+      // Clean URL so it doesn't keep forcing refresh.
+      router.replace('/(tabs)' as any);
+    });
+  }, [params.refresh_feed, profile, load, router]);
+
   // For sellers, detect if they already have a shop so we can highlight the "New shop" option once.
   useEffect(() => {
     if (!profile || !isSeller) return;
@@ -410,30 +452,7 @@ export default function FeedScreen() {
     }
   }, [followedShopIds.length, isSeller, profile]);
 
-  useEffect(() => {
-    const q = searchQuery.trim();
-    if (!q || !profile) {
-      setSearchResults([]);
-      return;
-    }
-    const t = setTimeout(async () => {
-      setSearching(true);
-      try {
-        const results = await globalSearch(
-          q,
-          profile.lat ?? 19.076,
-          profile.lng ?? 72.8777,
-          profile.radius_km ?? 5,
-        );
-        setSearchResults(results);
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setSearching(false);
-      }
-    }, 400);
-    return () => clearTimeout(t);
-  }, [searchQuery, profile?.id, profile?.lat, profile?.lng, profile?.radius_km]);
+  // Search UI removed — feed posts are always shown as loaded.
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -451,11 +470,7 @@ export default function FeedScreen() {
     load(false);
   };
 
-  const filteredPosts = posts.filter(post => {
-    if (!searchQuery.trim() || searchResults.length > 0) return true;
-    const q = searchQuery.toLowerCase();
-    return [post.caption, post.shop_name, post.product?.title].filter(Boolean).join(' ').toLowerCase().includes(q);
-  });
+  const filteredPosts = posts;
 
   const pickMedia = async (forStory: boolean) => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -621,50 +636,31 @@ export default function FeedScreen() {
 
   return (
     <View style={ff.root}>
-      <View style={ff.header}>
-        <View>
-          <Text style={ff.brand}>CityConnect</Text>
-          <Text style={ff.location}>📍 {profile?.city} · {profile?.radius_km} km{isBuyer ? ' · Buyer' : ' · Seller'}</Text>
-        </View>
-        <View style={ff.headerIcons}>
-          <TouchableOpacity onPress={() => setShowNotifications(true)}>
-            <Text style={ff.icon}>🔔</Text>
-            {notifications.length > 0 && <View style={ff.notifDot} />}
-          </TouchableOpacity>
-          {isSeller && (
-            <>
-              <TouchableOpacity onPress={() => router.push('/seller/shop' as any)}><Text style={ff.icon}>🏪</Text></TouchableOpacity>
-              <TouchableOpacity onPress={() => setShowCreateMenu(true)}><Text style={ff.icon}>➕</Text></TouchableOpacity>
-            </>
-          )}
-        </View>
-      </View>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: Colors.bg }}>
+        <View style={[ff.header, { paddingTop: (insets.top ?? 0) + 12 }]}>
+          <View style={ff.headerLeft}>
+            {isSeller && (
+              <TouchableOpacity onPress={() => setShowCreateMenu(true)} style={ff.postPlusBtn} accessibilityRole="button">
+                <Text style={[ff.postPlusIcon, { color: plusColor }]}>➕</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
-      <View style={ff.searchBar}>
-        <Text style={ff.searchIcon}>🔍</Text>
-        <TextInput
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder={isBuyer ? 'Search products & shops globally' : 'Search your feed'}
-          placeholderTextColor={Colors.dim}
-          style={ff.searchInput}
-        />
-        {searching && <ActivityIndicator color={Colors.orange} size="small" />}
-      </View>
+          <View style={ff.headerCenter}>
+            <Text style={ff.brand}>Vedastya</Text>
+            <Text style={ff.location}>📍 {profile?.city} · {profile?.radius_km} km{isBuyer ? ' · Buyer' : ' · Seller'}</Text>
+          </View>
 
-      {searchResults.length > 0 && (
-        <View style={ff.searchResults}>
-          {searchResults.slice(0, 8).map(r => (
-            <TouchableOpacity key={`${r.result_type}-${r.id}`} style={ff.searchRow}>
-              <Text style={ff.searchType}>{r.result_type === 'shop' ? '🏪' : '📦'}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={ff.searchTitle}>{r.title}</Text>
-                <Text style={ff.searchSub}>{r.subtitle} · {Number(r.distance_km).toFixed(1)} km</Text>
-              </View>
+          <View style={ff.headerRight}>
+            <TouchableOpacity onPress={() => setShowNotifications(true)}>
+              <Text style={ff.icon}>🔔</Text>
+              {notifications.length > 0 && <View style={ff.notifDot} />}
             </TouchableOpacity>
-          ))}
+          </View>
         </View>
-      )}
+      </SafeAreaView>
+
+      {/* Search UI removed */}
 
       {isBuyer && (
         <View style={ff.feedModeRow}>
@@ -1017,11 +1013,27 @@ function timeAgo(ts: string) {
 const ff = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bg },
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: Colors.border, backgroundColor: Colors.bg },
-  brand: { fontSize: 22, fontWeight: '800', color: Colors.orange },
-  location: { fontSize: 11, color: Colors.sub, marginTop: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: Colors.border, backgroundColor: Colors.bg },
+  headerLeft: { width: 48, alignItems: 'flex-start' },
+  headerCenter: { flex: 1, alignItems: 'center' },
+  headerRight: { width: 48, alignItems: 'flex-end' },
+  brand: { fontSize: 22, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.orange, letterSpacing: -0.3, textAlign: 'center' },
+  location: { fontSize: 11, fontFamily: Fonts.bodySemiBold, color: Colors.sub, marginTop: 2, textAlign: 'center' },
   headerIcons: { flexDirection: 'row', gap: 16, alignItems: 'center' },
   icon: { fontSize: 22 },
+  postPlusBtn: {
+    backgroundColor: 'transparent',
+    width: 36,
+    height: 36,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 0,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  postPlusIcon: { fontSize: 26, color: Colors.white, fontWeight: '900' },
   notifDot: { position: 'absolute', top: 0, right: -2, width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.red },
   searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.card, borderRadius: 24, marginHorizontal: 16, marginTop: 12, paddingHorizontal: 12, paddingVertical: 8 },
   searchIcon: { fontSize: 16, marginRight: 8 },
@@ -1128,15 +1140,17 @@ const sf = StyleSheet.create({
 const pf = StyleSheet.create({
   card: { borderBottomWidth: 1, borderBottomColor: Colors.border },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
-  shopIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: Colors.orange },
+  shopIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: Colors.orange, overflow: 'hidden' },
+  shopIconImage: { width: '100%', height: '100%' },
   shopEmoji: { fontSize: 22 },
   shopName: { fontSize: 15, fontWeight: '700', color: Colors.text },
   shopMeta: { fontSize: 11, color: Colors.sub, marginTop: 1 },
   adBadge: { backgroundColor: Colors.blue + '22', borderRadius: 20, paddingHorizontal: 7, paddingVertical: 2 },
   adText: { fontSize: 9, color: Colors.blue, fontWeight: '700' },
-  media: { width: W, height: W, backgroundColor: Colors.card, position: 'relative' },
-  image: { width: W, height: W },
-  imagePlaceholder: { width: W, height: W, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
+  // Instagram-like portrait feed ratio (approx 4:5)
+  media: { width: W, aspectRatio: 4 / 5, backgroundColor: Colors.card, position: 'relative' },
+  image: { width: '100%', height: '100%' },
+  imagePlaceholder: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
   videoBadge: { position: 'absolute', top: 12, right: 12, backgroundColor: '#000C', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
   videoBadgeText: { color: Colors.white, fontWeight: '700' },
   actions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
@@ -1160,7 +1174,7 @@ const pf = StyleSheet.create({
   textCard: {
     flex: 1,
     width: W,
-    height: W,
+    aspectRatio: 4 / 5,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
