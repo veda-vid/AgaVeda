@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
-  Image, ActivityIndicator, RefreshControl, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView,
+  Image, ActivityIndicator, RefreshControl, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView, Share, Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -10,7 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
 import { useCartStore } from '../../stores/cartStore';
 import {
-  getFeed, getFollowingFeed, likePost, unlikePost, savePost, unsavePost,
+  getFeed, getFollowingFeed, likePost, unlikePost, repostPost, unrepostPost, savePost, unsavePost,
   getComments, addComment, getStories, createStory, getReels, createReel,
   getShopByOwner, uploadImage, createPost, feedFromPostsTable,
 } from '../../lib/api';
@@ -84,11 +84,25 @@ function PostCard({
   const shopLogoUri = resolveMediaUrl(post.shop_logo);
   const [liked, setLiked] = useState(post.is_liked ?? false);
   const [saved, setSaved] = useState(post.is_saved ?? false);
+  const [reposted, setReposted] = useState(post.is_reposted ?? false);
   const [likes, setLikes] = useState(post.total_likes ?? 0);
+  const [reposts, setReposts] = useState(post.total_reposts ?? 0);
+  const [commentCount, setCommentCount] = useState(post.total_comments ?? 0);
   const [showComments, setShowComments] = useState(false);
+  const [showPostMenu, setShowPostMenu] = useState(false);
   const [comments, setComments] = useState<any[]>([]);
   const [commentText, setCommentText] = useState('');
   const [loadingComments, setLoadingComments] = useState(false);
+  const [reposting, setReposting] = useState(false);
+
+  useEffect(() => {
+    setLiked(!!post.is_liked);
+    setSaved(!!post.is_saved);
+    setReposted(!!post.is_reposted);
+    setLikes(post.total_likes ?? 0);
+    setReposts(post.total_reposts ?? 0);
+    setCommentCount(post.total_comments ?? 0);
+  }, [post.id, post.is_liked, post.is_saved, post.is_reposted, post.total_likes, post.total_reposts, post.total_comments]);
 
   const handleLike = async () => {
     const next = !liked;
@@ -109,6 +123,87 @@ function PostCard({
     } catch {}
   };
 
+  const handleRepost = async () => {
+    if (reposting) return;
+    const shopId = post.shop_id || post.shop?.id;
+    if (!shopId) {
+      Alert.alert('Error', 'Could not repost this item.');
+      return;
+    }
+
+    setReposting(true);
+    const next = !reposted;
+    setReposted(next);
+    setReposts((r: number) => Math.max(0, r + (next ? 1 : -1)));
+    setShowPostMenu(false);
+
+    try {
+      if (next) await repostPost(userId, post.id, shopId);
+      else await unrepostPost(userId, post.id);
+    } catch {
+      setReposted(!next);
+      setReposts((r: number) => Math.max(0, r - (next ? 1 : -1)));
+      Alert.alert('Error', 'Could not repost. Please try again.');
+    } finally {
+      setReposting(false);
+    }
+  };
+
+  const handleShare = async () => {
+    try {
+      const shareText = `Check out this from ${post.shop_name}: ${post.caption || 'Amazing product!'}\n\nhttps://cityconnect.app/post/${post.id}`;
+      await Share.share({ 
+        message: shareText, 
+        title: `${post.shop_name} on Vedastya`,
+        url: `https://cityconnect.app/post/${post.id}`
+      });
+    } catch {}
+  };
+
+  const handleReport = () => {
+    setShowPostMenu(false);
+    Alert.alert(
+      'Report Post',
+      'Why are you reporting this post?',
+      [
+        { text: 'Spam', onPress: () => Alert.alert('Reported', 'Thank you for reporting. We will review this content.') },
+        { text: 'Inappropriate content', onPress: () => Alert.alert('Reported', 'Thank you for reporting. We will review this content.') },
+        { text: 'False information', onPress: () => Alert.alert('Reported', 'Thank you for reporting. We will review this content.') },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  const handleCopyLink = async () => {
+    setShowPostMenu(false);
+    const postLink = `https://cityconnect.app/post/${post.id}`;
+    
+    // Web clipboard API
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(postLink);
+        Alert.alert('Link copied', 'Post link copied to clipboard');
+      } catch {
+        Alert.alert('Link', postLink);
+      }
+    } else {
+      // For mobile, show the link
+      Alert.alert('Post Link', postLink, [
+        { text: 'OK', style: 'default' }
+      ]);
+    }
+  };
+
+  const handleShareToStory = () => {
+    setShowPostMenu(false);
+    Alert.alert('Share to Story', 'This feature will allow you to share this post to your story.');
+  };
+
+  const handleSendToFriend = () => {
+    setShowPostMenu(false);
+    Alert.alert('Send', 'This feature will allow you to send this post to a friend.');
+  };
+
   const openComments = async () => {
     setShowComments(true);
     if (comments.length) return;
@@ -122,6 +217,7 @@ function PostCard({
     try {
       const c = await addComment(userId, post.id, commentText.trim());
       setComments(prev => [...prev, c]);
+      setCommentCount((n: number) => n + 1);
       setCommentText('');
     } catch {}
   };
@@ -146,6 +242,9 @@ function PostCard({
             {post.shop_avg_rating ? ` · ⭐ ${post.shop_avg_rating}` : ''}
           </Text>
         </View>
+        <TouchableOpacity onPress={() => setShowPostMenu(true)} style={pf.menuBtn}>
+          <Text style={pf.menuIcon}>⋯</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={pf.media}>
@@ -192,8 +291,21 @@ function PostCard({
       {!post.is_ad && (
         <View style={pf.actions}>
           <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-            <TouchableOpacity onPress={handleLike}><Text style={[pf.actionIcon, liked && { color: Colors.red }]}>{liked ? '❤️' : '🤍'}</Text></TouchableOpacity>
-            <TouchableOpacity onPress={openComments}><Text style={pf.actionIcon}>💬</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handleLike}>
+              <Text style={[pf.actionIcon, liked && { color: Colors.red }]}>{liked ? '❤️' : '🤍'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={openComments}>
+              <Text style={pf.actionIcon}>💬</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleRepost} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Text style={[pf.actionIconBright, reposted && { color: Colors.green }]}>↻</Text>
+              {reposts > 0 ? (
+                <Text style={[pf.likesText, reposted && { color: Colors.green }]}>{reposts}</Text>
+              ) : null}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleShare}>
+              <Text style={pf.actionIconBright}>⤴</Text>
+            </TouchableOpacity>
           </View>
           <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
             {isBuyer && productId && onAddToCart && (
@@ -204,8 +316,8 @@ function PostCard({
                 <Text style={pf.cartChipText}>🛒 Add</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity onPress={handleSave}>
-              <Text style={[pf.actionIcon, saved && { color: Colors.amber }]}>{saved ? '🔖' : '🏷️'}</Text>
+            <TouchableOpacity onPress={() => setShowPostMenu(true)}>
+              <Text style={pf.menuIconSmall}>⋯</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -213,7 +325,10 @@ function PostCard({
 
       {!post.is_ad && (
         <View style={pf.caption}>
-          <Text style={pf.likesText}>{likes} likes</Text>
+          <View style={pf.statsRow}>
+            <Text style={pf.likesText}>{likes} likes</Text>
+            {reposts > 0 && <Text style={pf.repostsText}> · {reposts} reposts</Text>}
+          </View>
           {typeof post.caption === 'string' && post.caption.startsWith('__TEXT_CARD__') ? (
             <Text style={pf.captionText}>
               <Text style={pf.shopNameInline}>{post.shop_name}</Text> shared an update
@@ -223,9 +338,9 @@ function PostCard({
               <Text style={pf.shopNameInline}>{post.shop_name}</Text> {post.caption}
             </Text>
           )}
-          {post.total_comments > 0 && !showComments && (
+          {commentCount > 0 && !showComments && (
             <TouchableOpacity onPress={openComments}>
-              <Text style={pf.viewComments}>View all {post.total_comments} comments</Text>
+              <Text style={pf.viewComments}>View all {commentCount} comments</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -256,6 +371,56 @@ function PostCard({
           </View>
         </View>
       )}
+
+      <Modal transparent visible={showPostMenu} animationType="fade" onRequestClose={() => setShowPostMenu(false)}>
+        <Pressable style={pf.menuModalBackdrop} onPress={() => setShowPostMenu(false)}>
+          <View style={pf.menuModalSheet}>
+            <View style={pf.menuModalHandle} />
+            <Text style={pf.menuModalTitle}>More options</Text>
+            
+            <TouchableOpacity style={pf.menuOption} onPress={() => { setShowPostMenu(false); handleRepost(); }}>
+              <Text style={pf.menuOptionIcon}>↻</Text>
+              <Text style={pf.menuOptionText}>{reposted ? 'Remove repost' : 'Repost to profile'}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={pf.menuOption} onPress={() => { setShowPostMenu(false); handleShare(); }}>
+              <Text style={pf.menuOptionIcon}>⤴</Text>
+              <Text style={pf.menuOptionText}>Share to...</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={pf.menuOption} onPress={handleSendToFriend}>
+              <Text style={pf.menuOptionIcon}>💬</Text>
+              <Text style={pf.menuOptionText}>Send to friend</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={pf.menuOption} onPress={handleShareToStory}>
+              <Text style={pf.menuOptionIcon}>📱</Text>
+              <Text style={pf.menuOptionText}>Share to story</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={pf.menuOption} onPress={handleCopyLink}>
+              <Text style={pf.menuOptionIcon}>🔗</Text>
+              <Text style={pf.menuOptionText}>Copy link</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={pf.menuOption} onPress={() => { setShowPostMenu(false); handleSave(); }}>
+              <Text style={pf.menuOptionIcon}>{saved ? '⬛' : '▢'}</Text>
+              <Text style={pf.menuOptionText}>{saved ? 'Remove from saved' : 'Save post'}</Text>
+            </TouchableOpacity>
+
+            <View style={pf.menuDivider} />
+
+            <TouchableOpacity style={[pf.menuOption, pf.menuOptionDanger]} onPress={handleReport}>
+              <Text style={pf.menuOptionIcon}>⚠️</Text>
+              <Text style={[pf.menuOptionText, pf.menuOptionTextDanger]}>Report</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={pf.menuOption} onPress={() => setShowPostMenu(false)}>
+              <Text style={[pf.menuOptionText, { textAlign: 'center', width: '100%' }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -308,7 +473,6 @@ export default function FeedScreen() {
 
   const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
   const isBuyer = profile?.role === 'buyer';
-  const plusColor = Colors.white;
 
   feedModeRef.current = feedMode;
   followedRef.current = followedShopIds;
@@ -320,7 +484,6 @@ export default function FeedScreen() {
 
     loadingRef.current = true;
     if (reset) {
-      setLoading(true);
       setHasMore(true);
       pageRef.current = 0;
     } else {
@@ -331,9 +494,6 @@ export default function FeedScreen() {
       const p = reset ? 0 : pageRef.current;
       const mode = feedModeRef.current;
       let data: any[] = [];
-      // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'feed-debug',hypothesisId:'H1',location:'app/(tabs)/index.tsx:FeedScreen:load:start',message:'feed load start',data:{reset,page:p,feedMode:mode,isBuyer:!!isBuyer,isSeller:!!isSeller,lat:profile.lat ?? null,lng:profile.lng ?? null,radius_km:profile.radius_km ?? null,followedShopCount:followedShopIds?.length ?? 0},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
 
       if (mode === 'following' && isBuyer) {
         data = await getFollowingFeed(profile.id, p, followedRef.current);
@@ -341,16 +501,13 @@ export default function FeedScreen() {
         // If we don't have lat/lng yet, do not query using hardcoded defaults
         // (it will return unrelated/stale posts).
         if (profile.lat == null || profile.lng == null) {
-          data = await feedFromPostsTable(p);
+          data = await feedFromPostsTable(p, profile.id);
         } else {
-          data = await getFeed(profile.lat, profile.lng, profile.radius_km ?? 5, p);
+          data = await getFeed(profile.lat, profile.lng, profile.radius_km ?? 5, p, profile.id);
         }
       }
       const rows = Array.isArray(data) ? data : [];
 
-      // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'feed-debug',hypothesisId:'H2',location:'app/(tabs)/index.tsx:FeedScreen:load:result',message:'feed load result',data:{reset,rowsCount:rows.length,topIds:rows.slice(0,5).map(r=>r.id),topCreatedAt:rows.slice(0,5).map(r=>r.created_at ?? null)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setPosts(prev => (reset ? rows : [...prev, ...rows]));
       setHasMore(rows.length >= 10);
       pageRef.current = p + 1;
@@ -408,9 +565,6 @@ export default function FeedScreen() {
     const shouldRefresh = String(params.refresh_feed ?? '') === '1';
     if (!shouldRefresh) return;
     if (!profile) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'feed-debug',hypothesisId:'H1',location:'app/(tabs)/index.tsx:FeedScreen:refresh_feed',message:'received refresh_feed param',data:{refresh_feed:params.refresh_feed,feedMode:feedModeRef.current,lat:profile.lat ?? null,lng:profile.lng ?? null},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     load(true).finally(() => {
       // Clean URL so it doesn't keep forcing refresh.
       router.replace('/(tabs)' as any);
@@ -454,21 +608,37 @@ export default function FeedScreen() {
 
   // Search UI removed — feed posts are always shown as loaded.
 
-  const onRefresh = () => {
+  const onRefresh = useCallback(() => {
+    if (!profile) return;
     setRefreshing(true);
     socialLoadedRef.current = false;
-    load(true);
-    if (profile) {
-      getStories(profile.id).then(setStories);
-      getReels(isBuyer && followedShopIds.length ? followedShopIds : undefined).then(setReels);
-      loadNotifications(profile.id).catch(() => {});
-    }
-  };
+    Promise.all([
+      load(true),
+      getStories(profile.id).then(setStories),
+      getReels(isBuyer && followedShopIds.length ? followedShopIds : undefined).then(setReels),
+      loadNotifications(profile.id).catch(() => {}),
+    ]).finally(() => setRefreshing(false));
+  }, [profile, load, isBuyer, followedShopIds.length, loadNotifications]);
 
   const onEndReached = () => {
     if (loading || loadingMore || !hasMore || loadingRef.current) return;
     load(false);
   };
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    let last = 0;
+    const onWheel = (event: WheelEvent) => {
+      const top = (document.scrollingElement?.scrollTop ?? window.scrollY) <= 8;
+      if (!top || event.deltaY >= -80) return;
+      const now = Date.now();
+      if (now - last < 1600 || refreshing) return;
+      last = now;
+      onRefresh();
+    };
+    window.addEventListener('wheel', onWheel, { passive: true });
+    return () => window.removeEventListener('wheel', onWheel);
+  }, [onRefresh, refreshing]);
 
   const filteredPosts = posts;
 
@@ -626,7 +796,7 @@ export default function FeedScreen() {
     );
   }
 
-  if (loading) {
+  if (loading && posts.length === 0) {
     return (
       <View style={ff.loader}>
         <ActivityIndicator color={Colors.orange} size="large" />
@@ -641,7 +811,7 @@ export default function FeedScreen() {
           <View style={ff.headerLeft}>
             {isSeller && (
               <TouchableOpacity onPress={() => setShowCreateMenu(true)} style={ff.postPlusBtn} accessibilityRole="button">
-                <Text style={[ff.postPlusIcon, { color: plusColor }]}>➕</Text>
+                <Text style={ff.postPlusIcon}>+</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -675,6 +845,7 @@ export default function FeedScreen() {
 
       <FlatList
         data={filteredPosts}
+        extraData={filteredPosts}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
           <PostCard
@@ -684,7 +855,15 @@ export default function FeedScreen() {
             onAddToCart={handleAddToCart}
           />
         )}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.orange} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={Colors.orange}
+            colors={[Colors.orange]}
+            progressBackgroundColor={Colors.card}
+          />
+        }
         onEndReached={onEndReached}
         onEndReachedThreshold={0.4}
         removeClippedSubviews
@@ -694,11 +873,16 @@ export default function FeedScreen() {
         ListFooterComponent={loadingMore ? <ActivityIndicator color={Colors.orange} style={{ marginVertical: 16 }} /> : null}
         ListHeaderComponent={
           <View>
+            {Platform.OS === 'web' && (
+              <TouchableOpacity onPress={onRefresh} style={ff.webRefresh} disabled={refreshing}>
+                <Text style={ff.webRefreshText}>{refreshing ? 'Refreshing…' : '↓ Tap to refresh feed'}</Text>
+              </TouchableOpacity>
+            )}
             <View style={ff.stories}>
               {isSeller && (
                 <TouchableOpacity style={sf.story} onPress={() => setShowStoryComposer(true)}>
                   <View style={[sf.storyRing, { borderStyle: 'dashed' }]}>
-                    <View style={sf.storyAvatar}><Text style={sf.storyEmoji}>➕</Text></View>
+                    <View style={sf.storyAvatar}><Text style={sf.storyPlusIcon}>+</Text></View>
                   </View>
                   <Text style={sf.storyName}>Your Story</Text>
                 </TouchableOpacity>
@@ -1017,23 +1201,12 @@ const ff = StyleSheet.create({
   headerLeft: { width: 48, alignItems: 'flex-start' },
   headerCenter: { flex: 1, alignItems: 'center' },
   headerRight: { width: 48, alignItems: 'flex-end' },
-  brand: { fontSize: 22, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.orange, letterSpacing: -0.3, textAlign: 'center' },
+  brand: { fontSize: 28, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.orange, letterSpacing: -0.5, textAlign: 'center', textShadowColor: '#00000022', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 },
   location: { fontSize: 11, fontFamily: Fonts.bodySemiBold, color: Colors.sub, marginTop: 2, textAlign: 'center' },
   headerIcons: { flexDirection: 'row', gap: 16, alignItems: 'center' },
   icon: { fontSize: 22 },
-  postPlusBtn: {
-    backgroundColor: 'transparent',
-    width: 36,
-    height: 36,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 0,
-    shadowColor: 'transparent',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  postPlusIcon: { fontSize: 26, color: Colors.white, fontWeight: '900' },
+  postPlusBtn: { backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', padding: 4 },
+  postPlusIcon: { fontSize: 28, color: Colors.text, fontWeight: '300' },
   notifDot: { position: 'absolute', top: 0, right: -2, width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.red },
   searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.card, borderRadius: 24, marginHorizontal: 16, marginTop: 12, paddingHorizontal: 12, paddingVertical: 8 },
   searchIcon: { fontSize: 16, marginRight: 8 },
@@ -1044,6 +1217,8 @@ const ff = StyleSheet.create({
   searchTitle: { color: Colors.text, fontWeight: '700', fontSize: 13 },
   searchSub: { color: Colors.sub, fontSize: 11, marginTop: 2 },
   feedModeRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 10 },
+  webRefresh: { alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  webRefreshText: { color: Colors.sub, fontSize: 12, fontWeight: '600' },
   feedModeChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border2 },
   feedModeChipActive: { backgroundColor: Colors.orange, borderColor: Colors.orange },
   feedModeText: { color: Colors.sub, fontSize: 12, fontWeight: '700' },
@@ -1134,6 +1309,7 @@ const sf = StyleSheet.create({
   storyAvatar: { flex: 1, borderRadius: 28, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   storyImg: { width: '100%', height: '100%' },
   storyEmoji: { fontSize: 26 },
+  storyPlusIcon: { fontSize: 32, color: Colors.text, fontWeight: '300' },
   storyName: { fontSize: 10, color: Colors.sub, textAlign: 'center' },
 });
 
@@ -1145,6 +1321,8 @@ const pf = StyleSheet.create({
   shopEmoji: { fontSize: 22 },
   shopName: { fontSize: 15, fontWeight: '700', color: Colors.text },
   shopMeta: { fontSize: 11, color: Colors.sub, marginTop: 1 },
+  menuBtn: { padding: 4, marginLeft: 4 },
+  menuIcon: { fontSize: 20, color: Colors.text, fontWeight: '700' },
   adBadge: { backgroundColor: Colors.blue + '22', borderRadius: 20, paddingHorizontal: 7, paddingVertical: 2 },
   adText: { fontSize: 9, color: Colors.blue, fontWeight: '700' },
   // Instagram-like portrait feed ratio (approx 4:5)
@@ -1155,10 +1333,15 @@ const pf = StyleSheet.create({
   videoBadgeText: { color: Colors.white, fontWeight: '700' },
   actions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
   actionIcon: { fontSize: 26 },
+  actionIconBright: { fontSize: 28, color: Colors.text, fontWeight: '600' },
+  actionIconActive: { color: Colors.orange },
+  menuIconSmall: { fontSize: 24, color: Colors.text, fontWeight: '700' },
   cartChip: { backgroundColor: Colors.orange + '22', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: Colors.orange + '55' },
   cartChipText: { color: Colors.orange, fontWeight: '700', fontSize: 12 },
   caption: { paddingHorizontal: 16, paddingBottom: 12, gap: 3 },
+  statsRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   likesText: { fontSize: 13, fontWeight: '700', color: Colors.text },
+  repostsText: { fontSize: 13, fontWeight: '700', color: Colors.sub },
   captionText: { fontSize: 13, color: Colors.text, lineHeight: 18 },
   shopNameInline: { fontWeight: '700' },
   viewComments: { fontSize: 12, color: Colors.dim, marginTop: 2 },
@@ -1180,4 +1363,14 @@ const pf = StyleSheet.create({
     paddingHorizontal: 24,
   },
   textCardText: { textAlign: 'center' },
+  menuModalBackdrop: { flex: 1, backgroundColor: '#000A', justifyContent: 'flex-end' },
+  menuModalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingBottom: 20 },
+  menuModalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border2, alignSelf: 'center', marginTop: 8, marginBottom: 8 },
+  menuModalTitle: { fontSize: 14, fontWeight: '700', color: Colors.text, textAlign: 'center', marginBottom: 12, paddingTop: 8 },
+  menuOption: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 14 },
+  menuOptionIcon: { fontSize: 20 },
+  menuOptionText: { fontSize: 15, color: Colors.text, fontWeight: '500' },
+  menuDivider: { height: 1, backgroundColor: Colors.border2, marginVertical: 8 },
+  menuOptionDanger: {},
+  menuOptionTextDanger: { color: Colors.red },
 });

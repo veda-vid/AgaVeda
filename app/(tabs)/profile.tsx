@@ -2,16 +2,16 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput, Image,
-  Switch, Alert, ActivityIndicator, StyleSheet, Platform, Modal, FlatList, useWindowDimensions,
+  Switch, Alert, ActivityIndicator, StyleSheet, Platform, Modal, FlatList, useWindowDimensions, Share,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
-import { updateProfile, uploadImage, getShopByOwner, getPostsByShop, updateShop, getSavedPosts, getMySellerCompetitiveProfile } from '../../lib/api';
+import { updateProfile, uploadImage, getShopByOwner, getPostsByShop, updateShop, getSavedPosts, getRepostedPosts, getMySellerCompetitiveProfile } from '../../lib/api';
 import * as ImagePicker from 'expo-image-picker';
-import { Colors, CurrentThemeId, DEFAULT_SHOP_BIO, RADIUS_OPTIONS, THEME_OPTIONS, THEME_STORAGE_KEY, type AppThemeId } from '../../constants/theme';
-import type { Post, SellerCompetitiveProfile } from '../../types';
+import { Colors, CurrentThemeId, DEFAULT_SHOP_BIO, RADIUS_OPTIONS, SHOP_CATEGORIES, THEME_OPTIONS, THEME_STORAGE_KEY, type AppThemeId } from '../../constants/theme';
+import type { Post, SellerCompetitiveProfile, Shop } from '../../types';
 
-function StatBox({ value, label, icon }: { value: string; label: string; icon?: string }) {
+function StatBox({ value, label, icon, hint }: { value: string; label: string; icon?: string; hint?: string }) {
   const [hovered, setHovered] = useState(false);
   return (
     <TouchableOpacity
@@ -35,6 +35,7 @@ function StatBox({ value, label, icon }: { value: string; label: string; icon?: 
       {hovered ? (
         <View style={s.statTooltip}>
           <Text style={s.statTooltipText}>{label}</Text>
+          {hint ? <Text style={s.statTooltipHint}>{hint}</Text> : null}
         </View>
       ) : null}
     </TouchableOpacity>
@@ -313,6 +314,33 @@ function formatPostDate(ts: string) {
   });
 }
 
+function formatClockTime(value?: string | null) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.valueOf())) {
+    return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(parsed);
+  }
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = match[2];
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${minute} ${suffix}`;
+}
+
+function formatShopHours(openTime?: string | null, closeTime?: string | null) {
+  const open = formatClockTime(openTime);
+  const close = formatClockTime(closeTime);
+  if (open && close) return `${open} – ${close}`;
+  return open || close || null;
+}
+
+function shopHandle(name?: string | null) {
+  const slug = (name || 'shop').toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 18);
+  return `@${slug || 'shop'}`;
+}
+
 function hasCaptionTags(caption?: string) {
   return /(^|\s)#[a-z0-9_]+/i.test(caption ?? '');
 }
@@ -326,6 +354,36 @@ type ProfilePostItem = Post & {
   saved_at?: string;
 };
 
+type SellerProfileTab = 'posts' | 'videos' | 'reposts' | 'saved';
+type BuyerProfileTab = 'posts' | 'reposts' | 'tagged' | 'saved';
+
+function categoryRankLabel(category?: string | null) {
+  const meta = SHOP_CATEGORIES.find(item => item.id === category);
+  if (!meta) return 'Toy Shop Rank';
+  if (meta.id === 'toys') return 'Toy Shop Rank';
+  return `${meta.label} Rank`;
+}
+
+function formatSellerLevel(tier?: string | null) {
+  const match = String(tier || 'Tier 4').match(/(\d+)/);
+  return `Level ${match?.[1] || '4'}`;
+}
+
+function isVideoPost(post: ProfilePostItem) {
+  return post.media_type === 'video' || /\.(mp4|mov|m4v|webm)(\?|$)/i.test(post.media_urls?.[0] ?? '');
+}
+
+function isRepostItem(post: ProfilePostItem) {
+  return !!post.is_ad || /^\s*(repost|shared)/i.test(post.caption || '');
+}
+
+function formatCompactCount(value?: number | null) {
+  const n = Number(value ?? 0);
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+  return String(n);
+}
+
 export default function ProfileScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -338,17 +396,20 @@ export default function ProfileScreen() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [coverUploading, setCoverUploading] = useState(false);
   const [sellerShopProducts, setSellerShopProducts] = useState<number | null>(null);
+  const [sellerShop, setSellerShop] = useState<Shop | null>(null);
   const [shopCoverUrl, setShopCoverUrl] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'profile' | 'settings'>('profile');
-  const [profileTab, setProfileTab] = useState<'posts' | 'tagged' | 'saved'>('posts');
+  const [profileTab, setProfileTab] = useState<SellerProfileTab | BuyerProfileTab>('posts');
   const [settingsQuery, setSettingsQuery] = useState('');
   const [selectedShopPlan, setSelectedShopPlan] = useState<'free' | 'pro' | 'premium'>('free');
   const [plansOpen, setPlansOpen] = useState(false);
   const [profilePosts, setProfilePosts] = useState<ProfilePostItem[]>([]);
   const [savedPosts, setSavedPosts] = useState<ProfilePostItem[]>([]);
+  const [repostedPosts, setRepostedPosts] = useState<ProfilePostItem[]>([]);
   const [competitiveProfile, setCompetitiveProfile] = useState<SellerCompetitiveProfile | null>(null);
   const [postsLoading, setPostsLoading] = useState(false);
   const [savedLoading, setSavedLoading] = useState(false);
+  const [repostedLoading, setRepostedLoading] = useState(false);
   const [competitiveLoading, setCompetitiveLoading] = useState(false);
   const [postOpen, setPostOpen] = useState(false);
   const [postViewerPosts, setPostViewerPosts] = useState<ProfilePostItem[]>([]);
@@ -360,9 +421,10 @@ export default function ProfileScreen() {
   const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
   const isBuyer = profile?.role === 'buyer';
   const isLockedSeller = profile?.role === 'seller';
-  const gridColumns = width >= 900 ? 3 : 2;
-  const gridGap = 6;
-  const gridItemWidth = (width - 40 - gridGap * (gridColumns - 1)) / gridColumns;
+  const gridColumns = isSeller ? 3 : (width >= 900 ? 3 : 2);
+  const gridGap = isSeller ? 2 : 6;
+  const gridHorizontalPad = isSeller ? 0 : 40;
+  const gridItemWidth = (width - gridHorizontalPad - gridGap * (gridColumns - 1)) / gridColumns;
 
   useEffect(() => {
     if (!profile || !isSeller) return;
@@ -370,6 +432,7 @@ export default function ProfileScreen() {
     (async () => {
       try {
         const shop = await getShopByOwner(profile.id);
+        setSellerShop(shop);
         setShopCoverUrl(shop?.cover_url ?? null);
         // #region agent log
         fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'profile-cover-debug',hypothesisId:'H3',location:'app/(tabs)/profile.tsx:158',message:'seller shop loaded for profile cover',data:{isSeller,hasShop:!!shop,hasCoverUrl:!!shop?.cover_url},timestamp:Date.now()})}).catch(()=>{});
@@ -377,7 +440,7 @@ export default function ProfileScreen() {
         if (!shop || cancelled) {
           return;
         }
-        const posts = await getPostsByShop(shop.id);
+        const posts = await getPostsByShop(shop.id, profile.id);
         setSellerShopProducts(posts.filter(post => !!post.product_id).length);
       } catch (error: any) {
         if (!cancelled) setSellerShopProducts(0);
@@ -390,7 +453,9 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     if (viewMode !== 'profile') return;
-    if (!profile || profileTab !== 'posts') return;
+    if (!profile) return;
+    if (profileTab === 'saved') return;
+    if (!isSeller && profileTab !== 'posts' && profileTab !== 'tagged') return;
     if (!isSeller) {
       setProfilePosts([]);
       return;
@@ -404,7 +469,7 @@ export default function ProfileScreen() {
           if (!cancelled) setProfilePosts([]);
           return;
         }
-        const posts = await getPostsByShop(shop.id);
+        const posts = await getPostsByShop(shop.id, profile.id);
         const textCardCount = Array.isArray(posts)
           ? posts.filter(p => typeof p?.caption === 'string' && p.caption.startsWith('__TEXT_CARD__')).length
           : 0;
@@ -436,6 +501,26 @@ export default function ProfileScreen() {
         if (!cancelled) setSavedPosts([]);
       } finally {
         if (!cancelled) setSavedLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, profileTab, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'profile') return;
+    if (!profile || profileTab !== 'reposts') return;
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) setRepostedLoading(true);
+      try {
+        const posts = await getRepostedPosts(profile.id);
+        if (!cancelled) setRepostedPosts(Array.isArray(posts) ? posts : []);
+      } catch {
+        if (!cancelled) setRepostedPosts([]);
+      } finally {
+        if (!cancelled) setRepostedLoading(false);
       }
     })();
     return () => {
@@ -613,14 +698,29 @@ export default function ProfileScreen() {
   const roleLabel = profile.role === 'buyer' ? 'Buyer' : profile.role === 'seller' ? 'Seller' : 'Service Provider';
   const activeTheme = THEME_OPTIONS.find(option => option.id === CurrentThemeId) ?? THEME_OPTIONS[0];
   const taggedPosts = profilePosts.filter(post => hasCaptionTags(post.caption));
-  const activeGridPosts = profileTab === 'posts'
-    ? profilePosts
-    : profileTab === 'tagged'
-      ? taggedPosts
-      : savedPosts;
-  const isGridLoading = profileTab === 'saved' ? savedLoading : postsLoading;
+  const videoPosts = profilePosts.filter(isVideoPost);
+  const activeGridPosts = profileTab === 'videos'
+    ? videoPosts
+    : profileTab === 'reposts'
+      ? repostedPosts
+      : profileTab === 'tagged'
+        ? taggedPosts
+        : profileTab === 'saved'
+          ? savedPosts
+          : profilePosts;
+  const isGridLoading = profileTab === 'saved' ? savedLoading : profileTab === 'reposts' ? repostedLoading : postsLoading;
   const visibleProfilePosts = postOpen ? postViewerPosts.slice(activePostIndex) : [];
-  const emptyState = profileTab === 'tagged'
+  const emptyState = profileTab === 'videos'
+    ? {
+        title: 'No videos yet',
+        text: 'Upload a reel or video post and it will appear in this grid.',
+      }
+    : profileTab === 'reposts'
+      ? {
+          title: 'No reposts yet',
+          text: 'Shared and promoted posts from your shop will show up here.',
+        }
+    : profileTab === 'tagged'
     ? {
         title: 'No tagged posts yet',
         text: 'Posts that include your saved hashtags will appear here.',
@@ -634,6 +734,8 @@ export default function ProfileScreen() {
           title: 'No posts yet',
           text: 'Create your first post to start building your profile grid.',
         };
+
+  const rankCategory = competitiveProfile?.category || sellerShop?.category || 'toys';
   const sellerLeaderboardStats = [
     {
       value: competitiveLoading
@@ -641,7 +743,8 @@ export default function ProfileScreen() {
         : competitiveProfile
           ? `#${competitiveProfile.category_rank} / ${competitiveProfile.category_population}`
           : '#3 / 45',
-      label: `${competitiveProfile?.category ? `${competitiveProfile.category[0].toUpperCase()}${competitiveProfile.category.slice(1)}` : 'Toy Shop'} Rank`,
+      label: categoryRankLabel(rankCategory),
+      hint: 'Based on reviews and order volume vs similar shops.',
       icon: '🏆',
     },
     {
@@ -656,7 +759,7 @@ export default function ProfileScreen() {
     {
       value: competitiveLoading
         ? '...'
-        : competitiveProfile?.seller_tier ?? 'Tier 4',
+        : formatSellerLevel(competitiveProfile?.seller_tier),
       label: 'Seller Tier',
       icon: '🎖️',
     },
@@ -678,117 +781,186 @@ export default function ProfileScreen() {
     setThemeOpen(false);
   };
 
+  const shopHours = formatShopHours(sellerShop?.open_time, sellerShop?.close_time);
+  const displayShopName = sellerShop?.name || profile.name;
+  const shareProfile = async () => {
+    const hoursLine = shopHours ? `Open ${shopHours}` : '';
+    const message = [displayShopName, hoursLine, sellerShop?.address || profile.city]
+      .filter(Boolean)
+      .join('\n');
+    try {
+      await Share.share({ message, title: displayShopName });
+    } catch {
+      Alert.alert(displayShopName, hoursLine || 'Shop profile');
+    }
+  };
+
   return (
     <View style={s.root}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 80 }}>
         {viewMode === 'profile' ? (
           <>
-            <View style={s.profileTopBar}>
-              <View style={s.profileTopBarLeft}>
-                {isSeller ? (
-                  <TouchableOpacity
-                    onPress={() => router.push('/seller/upload' as any)}
-                    style={s.postPlusBtn}
-                    activeOpacity={0.85}
-                    accessibilityRole="button"
-                  >
-                    <Text style={s.postPlusIcon}>➕</Text>
+            {isSeller ? (
+              <View style={s.igTopBar}>
+                <TouchableOpacity
+                  onPress={() => router.push('/seller/upload' as any)}
+                  style={s.postPlusBtn}
+                  activeOpacity={0.85}
+                >
+                  <Text style={s.postPlusIcon}>+</Text>
+                </TouchableOpacity>
+                <Text style={s.igUsername} numberOfLines={1}>{displayShopName}</Text>
+                <TouchableOpacity onPress={() => setViewMode('settings')} style={s.igIconBtn} activeOpacity={0.85}>
+                  <Text style={s.igMenuIcon}>☰</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={s.profileTopBar}>
+                <View style={s.profileTopBarLeft} />
+                <View style={s.profileTopBarRight}>
+                  <TouchableOpacity onPress={() => setViewMode('settings')} style={s.iconBtn} activeOpacity={0.85} accessibilityRole="button">
+                    <Text style={s.iconBtnText}>≡</Text>
                   </TouchableOpacity>
-                ) : null}
+                </View>
               </View>
-              <View style={s.profileTopBarRight}>
-                <TouchableOpacity onPress={() => setViewMode('settings')} style={s.iconBtn} activeOpacity={0.85} accessibilityRole="button">
-                  <Text style={s.iconBtnText}>≡</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+            )}
 
-            {/* Cover */}
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={isSeller ? changeCover : undefined}
-              style={s.cover}
-            >
-              {shopCoverUrl ? (
-                <Image
-                  key={shopCoverUrl}
-                  source={{ uri: shopCoverUrl }}
-                  style={s.coverImage}
-                  resizeMode="cover"
-                  onLoad={() => {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'post-fix',hypothesisId:'H1',location:'app/(tabs)/profile.tsx:309',message:'cover image rendered successfully',data:{hasShopCoverUrl:!!shopCoverUrl},timestamp:Date.now()})}).catch(()=>{});
-                    // #endregion
-                  }}
-                  onError={() => {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'post-fix',hypothesisId:'H6',location:'app/(tabs)/profile.tsx:315',message:'cover image failed to render',data:{hasShopCoverUrl:!!shopCoverUrl},timestamp:Date.now()})}).catch(()=>{});
-                    // #endregion
-                  }}
-                />
-              ) : null}
-              <View style={s.coverOverlay} />
-              {!shopCoverUrl ? <Text style={s.coverEmoji}>🏙️</Text> : null}
-            </TouchableOpacity>
+            {isSeller ? (
+              <>
+                <View style={s.igIdentityRow}>
+                  <TouchableOpacity onPress={changeAvatar} style={s.igAvatarRing} activeOpacity={0.85}>
+                    {profile.avatar_url || sellerShop?.logo_url
+                      ? <Image source={{ uri: profile.avatar_url || sellerShop?.logo_url || '' }} style={s.igAvatarImg} />
+                      : <Text style={s.igAvatarEmoji}>{roleEmoji}</Text>}
+                  </TouchableOpacity>
+                  <View style={s.igStatsRow}>
+                    <View style={s.igStat}>
+                      <Text style={s.igStatVal}>{profilePosts.length}</Text>
+                      <Text style={s.igStatLabel}>posts</Text>
+                    </View>
+                    <View style={s.igStat}>
+                      <Text style={s.igStatVal}>{sellerShop?.total_followers ?? 0}</Text>
+                      <Text style={s.igStatLabel}>followers</Text>
+                    </View>
+                    <View style={s.igStat}>
+                      <Text style={s.igStatVal}>{followedShopIds.length}</Text>
+                      <Text style={s.igStatLabel}>following</Text>
+                    </View>
+                  </View>
+                </View>
 
-            {/* Avatar + edit */}
-            <View style={s.avatarRow}>
-              <TouchableOpacity onPress={changeAvatar} style={s.avatar} activeOpacity={0.8}>
-                {profile.avatar_url
-                  ? <Image
-                      source={{ uri: profile.avatar_url }}
-                      style={s.avatarImg}
-                      onLoad={() => {
-                        // #region agent log
-                        fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'profile-media-debug',hypothesisId:'H6',location:'app/(tabs)/profile.tsx:327',message:'avatar image rendered successfully',data:{hasAvatarUrl:true},timestamp:Date.now()})}).catch(()=>{});
-                        // #endregion
-                      }}
-                      onError={() => {
-                        // #region agent log
-                        fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'profile-media-debug',hypothesisId:'H6',location:'app/(tabs)/profile.tsx:333',message:'avatar image failed to render',data:{hasAvatarUrl:true},timestamp:Date.now()})}).catch(()=>{});
-                        // #endregion
-                      }}
+                <View style={s.igBioBlock}>
+                  <Text style={s.igDisplayName}>{displayShopName}</Text>
+                  <Text style={s.igHandle}>{shopHandle(displayShopName)}</Text>
+                  <View style={s.igHoursRow}>
+                    <View style={[s.igOpenPill, { backgroundColor: sellerShop?.is_open ? Colors.green + '22' : Colors.dim + '22' }]}>
+                      <Text style={[s.igOpenPillText, { color: sellerShop?.is_open ? Colors.green : Colors.sub }]}>
+                        {sellerShop?.is_open ? 'Open now' : 'Closed'}
+                      </Text>
+                    </View>
+                    <Text style={s.igHoursText}>
+                      {shopHours ? `🕒 ${shopHours}` : '🕒 Shop hours not set'}
+                    </Text>
+                  </View>
+                  <Text style={s.igMetaLine}>{roleEmoji} {roleLabel} · {profile.city}</Text>
+                  <Text style={s.igBio} numberOfLines={3}>{sellerShop?.description || profile.bio || DEFAULT_SHOP_BIO}</Text>
+                </View>
+
+                <View style={s.igActionRow}>
+                  <TouchableOpacity onPress={() => setEditOpen(true)} style={s.igActionBtn} activeOpacity={0.85}>
+                    <Text style={s.igActionBtnText}>Edit profile</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={shareProfile} style={s.igActionBtn} activeOpacity={0.85}>
+                    <Text style={s.igActionBtnText}>Share profile</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => router.push('/seller/shop' as any)} style={s.igActionIcon} activeOpacity={0.85}>
+                    <Text style={s.igActionIconText}>🏪</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={s.statsRow}>
+                  {sellerLeaderboardStats.map(stat => (
+                    <StatBox
+                      key={stat.label}
+                      value={stat.value}
+                      label={stat.label}
+                      hint={(stat as any).hint}
+                      icon={stat.icon}
                     />
-                  : <Text style={s.avatarEmoji}>{roleEmoji}</Text>}
-              </TouchableOpacity>
-              <View style={s.avatarActions}>
-                <TouchableOpacity onPress={() => setEditOpen(true)} style={s.editBtn}>
-                  <Text style={s.editBtnText}>✏️ Edit Profile</Text>
+                  ))}
+                </View>
+                <View style={s.followersStrip}>
+                  <Text style={s.followersStripTitle}>
+                    👥 {sellerShop?.total_followers ?? 0} followers
+                  </Text>
+                  <Text style={s.followersStripText}>
+                    {sellerShop?.total_reviews ?? 0} reviews from local buyers · {sellerShop?.total_products ?? sellerShopProducts ?? 0} products
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <TouchableOpacity activeOpacity={0.8} style={s.cover}>
+                  {shopCoverUrl ? (
+                    <Image
+                      key={shopCoverUrl}
+                      source={{ uri: shopCoverUrl }}
+                      style={s.coverImage}
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                  <View style={s.coverOverlay} />
+                  {!shopCoverUrl ? <Text style={s.coverEmoji}>🏙️</Text> : null}
                 </TouchableOpacity>
-              </View>
-            </View>
 
-            {/* Info */}
-            <View style={s.infoBlock}>
-              <Text style={s.name}>{profile.name}</Text>
-              <View style={s.roleBadge}>
-                <Text style={s.roleText}>{roleEmoji} {roleLabel}</Text>
-              </View>
-              <Text style={s.city}>📍 {profile.city} · within {profile.radius_km} km</Text>
-              <Text style={s.bio} numberOfLines={3}>{profile.bio || DEFAULT_SHOP_BIO}</Text>
-            </View>
+                <View style={s.avatarRow}>
+                  <TouchableOpacity onPress={changeAvatar} style={s.avatar} activeOpacity={0.8}>
+                    {profile.avatar_url
+                      ? <Image source={{ uri: profile.avatar_url }} style={s.avatarImg} />
+                      : <Text style={s.avatarEmoji}>{roleEmoji}</Text>}
+                  </TouchableOpacity>
+                  <View style={s.avatarActions}>
+                    <TouchableOpacity onPress={() => setEditOpen(true)} style={s.editBtn}>
+                      <Text style={s.editBtnText}>✏️ Edit Profile</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
 
-            {/* Stats */}
-            <View style={s.statsRow}>
-              {isSeller ? (
-                sellerLeaderboardStats.map(stat => (
-                  <StatBox
-                    key={stat.label}
-                    value={stat.value}
-                    label={stat.label}
-                    icon={stat.icon}
-                  />
-                ))
-              ) : (
-                <>
+                <View style={s.infoBlock}>
+                  <Text style={s.name}>{profile.name}</Text>
+                  <View style={s.roleBadge}>
+                    <Text style={s.roleText}>{roleEmoji} {roleLabel}</Text>
+                  </View>
+                  <Text style={s.city}>📍 {profile.city} · within {profile.radius_km} km</Text>
+                  <Text style={s.bio} numberOfLines={3}>{profile.bio || DEFAULT_SHOP_BIO}</Text>
+                </View>
+
+                <View style={s.statsRow}>
                   <StatBox value={String(followedShopIds.length)} label="Following" icon="🤝" />
                   <StatBox value={String(followedShopIds.length)} label="Shops" icon="🏪" />
                   <StatBox value={`${profile.radius_km}`} label="km radius" icon="📍" />
-                </>
-              )}
-            </View>
+                </View>
+              </>
+            )}
 
-            {/* Tabs (Instagram-like) */}
+            {isSeller ? (
+              <View style={s.igTabsRow}>
+                {([
+                  ['posts', '▦'],
+                  ['videos', '▷'],
+                  ['reposts', '↺'],
+                  ['saved', '🔖'],
+                ] as const).map(([tab, icon]) => (
+                  <TouchableOpacity
+                    key={tab}
+                    onPress={() => setProfileTab(tab)}
+                    style={[s.igTabBtn, profileTab === tab && s.igTabBtnActive]}
+                  >
+                    <Text style={[s.igTabIcon, profileTab === tab && s.igTabIconActive]}>{icon}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : (
             <View style={s.profileTabsRow}>
               <TouchableOpacity
                 onPress={() => setProfileTab('posts')}
@@ -798,10 +970,17 @@ export default function ProfileScreen() {
                 <Text style={[s.profileTabLabel, profileTab === 'posts' && s.profileTabLabelActive]}>Posts</Text>
               </TouchableOpacity>
               <TouchableOpacity
+                onPress={() => setProfileTab('reposts')}
+                style={[s.profileTabBtn, profileTab === 'reposts' && s.profileTabBtnActive]}
+              >
+                <Text style={[s.profileTabIcon, profileTab === 'reposts' && s.profileTabIconActive]}>↺</Text>
+                <Text style={[s.profileTabLabel, profileTab === 'reposts' && s.profileTabLabelActive]}>Reposts</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={() => setProfileTab('tagged')}
                 style={[s.profileTabBtn, profileTab === 'tagged' && s.profileTabBtnActive]}
               >
-                <Text style={[s.profileTabIcon, profileTab === 'tagged' && s.profileTabIconActive]}>👥</Text>
+                <Text style={[s.profileTabIcon, profileTab === 'tagged' && s.profileTabIconActive]}>👤</Text>
                 <Text style={[s.profileTabLabel, profileTab === 'tagged' && s.profileTabLabelActive]}>Tagged</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -812,9 +991,9 @@ export default function ProfileScreen() {
                 <Text style={[s.profileTabLabel, profileTab === 'saved' && s.profileTabLabelActive]}>Saved</Text>
               </TouchableOpacity>
             </View>
+            )}
 
-            {/* Posts grid */}
-            <View style={[s.gridWrap, { gap: gridGap }]}>
+            <View style={[s.gridWrap, { gap: gridGap }, isSeller && s.igGridWrap]}>
               {isGridLoading ? (
                 <View style={s.gridState}>
                   <ActivityIndicator color={Colors.orange} />
@@ -832,7 +1011,7 @@ export default function ProfileScreen() {
                         setPostOpen(true);
                       }}
                     >
-                      <View style={s.gridThumb}>
+                      <View style={[s.gridThumb, isSeller && s.igGridThumb]}>
                         {post.media_urls?.length ? (
                           <Image source={{ uri: post.media_urls[0] }} style={s.gridThumbImg} />
                         ) : (() => {
@@ -853,12 +1032,22 @@ export default function ProfileScreen() {
                             </View>
                           );
                         })()}
+                        {isSeller && isVideoPost(post) ? (
+                          <View style={s.igTileBadge}><Text style={s.igTileBadgeText}>▶</Text></View>
+                        ) : isSeller && (post.media_urls?.length ?? 0) > 1 ? (
+                          <View style={s.igTileBadge}><Text style={s.igTileBadgeText}>⧉</Text></View>
+                        ) : null}
+                        {isSeller ? (
+                          <View style={s.igTileCount}>
+                            <Text style={s.igTileCountText}>{formatCompactCount(post.total_likes)}</Text>
+                          </View>
+                        ) : null}
                       </View>
                     </TouchableOpacity>
                   ))
                 : (
                   <View style={s.gridState}>
-                    <Text style={s.gridStateIcon}>{profileTab === 'posts' ? '📷' : profileTab === 'tagged' ? '🏷️' : '🔖'}</Text>
+                    <Text style={s.gridStateIcon}>{profileTab === 'posts' ? '📷' : profileTab === 'videos' ? '▶' : profileTab === 'reposts' ? '↺' : profileTab === 'tagged' ? '🏷️' : '🔖'}</Text>
                     <Text style={s.gridStateTitle}>{emptyState.title}</Text>
                     <Text style={s.gridStateText}>{emptyState.text}</Text>
                   </View>
@@ -921,7 +1110,10 @@ export default function ProfileScreen() {
               <View style={s.section}>
                 <Text style={s.sectionTitle}>Settings</Text>
                 {isSeller && (
-                  <SettingRow icon="🏪" label="My Shop" value="Manage" onPress={() => router.push('/seller/shop' as any)} />
+                  <>
+                    <SettingRow icon="🏪" label="My Shop" value="Manage" onPress={() => router.push('/seller/shop' as any)} />
+                    <SettingRow icon="🖼️" label="Shop Wall" value="Change" onPress={changeCover} />
+                  </>
                 )}
                 {isBuyer && (
                   <SettingRow icon="🛒" label="My Cart" onPress={() => router.push('/(tabs)/cart' as any)} />
@@ -1087,8 +1279,108 @@ const s = StyleSheet.create({
   profileTopBar:{ position: 'absolute', top: Platform.OS === 'web' ? 16 : 12, left: 16, right: 16, zIndex: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   profileTopBarLeft: { minWidth: 44, alignItems: 'flex-start' },
   profileTopBarRight:{ minWidth: 44, alignItems: 'flex-end' },
-  postPlusBtn:   { width: 42, height: 42, borderRadius: 21, backgroundColor: Colors.orange, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FFFFFF22' },
-  postPlusIcon:  { fontSize: 24, color: Colors.white, fontWeight: '900' },
+  igTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: Platform.OS === 'ios' ? 54 : 18,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+  },
+  postPlusBtn: { backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', padding: 4 },
+  postPlusIcon: { fontSize: 28, color: Colors.text, fontWeight: '300' },
+  igUsername: { flex: 1, textAlign: 'center', color: Colors.text, fontSize: 18, fontWeight: '800' },
+  igIconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  igIconBtnText: { color: Colors.text, fontSize: 26, fontWeight: '400', marginTop: -2 },
+  igMenuIcon: { color: Colors.text, fontSize: 20, fontWeight: '700' },
+  igIdentityRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 6, paddingBottom: 12, gap: 18 },
+  igAvatarRing: {
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    borderWidth: 2,
+    borderColor: Colors.border2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: Colors.card,
+  },
+  igAvatarImg: { width: '100%', height: '100%' },
+  igAvatarEmoji: { fontSize: 36 },
+  igStatsRow: { flex: 1, flexDirection: 'row', justifyContent: 'space-around' },
+  igStat: { alignItems: 'center', minWidth: 64 },
+  igStatVal: { color: Colors.text, fontSize: 18, fontWeight: '800' },
+  igStatLabel: { color: Colors.text, fontSize: 13, marginTop: 2 },
+  igBioBlock: { paddingHorizontal: 16, paddingBottom: 12, gap: 3 },
+  igDisplayName: { color: Colors.text, fontSize: 28, fontWeight: '900', letterSpacing: -0.5, textShadowColor: '#00000022', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 },
+  igHandle: { color: Colors.sub, fontSize: 13 },
+  igHoursRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  igOpenPill: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  igOpenPillText: { fontSize: 12, fontWeight: '800' },
+  igHoursText: { color: Colors.text, fontSize: 13, fontWeight: '600' },
+  igMetaLine: { color: Colors.sub, fontSize: 13, marginTop: 2 },
+  igBio: { color: Colors.text, fontSize: 13, lineHeight: 18, marginTop: 4 },
+  igActionRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 8, marginBottom: 8 },
+  igActionBtn: {
+    flex: 1,
+    backgroundColor: Colors.card,
+    borderRadius: 10,
+    minHeight: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  igActionBtnText: { color: Colors.text, fontSize: 13, fontWeight: '700' },
+  igActionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: Colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  igActionIconText: { fontSize: 14 },
+  followersStrip: {
+    marginHorizontal: 20,
+    marginBottom: 10,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  followersStripTitle: { color: Colors.text, fontSize: 13, fontWeight: '800' },
+  followersStripText: { color: Colors.sub, fontSize: 12, marginTop: 3 },
+  igTabsRow: { flexDirection: 'row', marginHorizontal: 0, marginTop: 8, marginBottom: 0, gap: 0, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border },
+  igTabBtn: { flex: 1, backgroundColor: 'transparent', borderWidth: 0, borderRadius: 0, paddingVertical: 10, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 1, borderBottomColor: 'transparent' },
+  igTabBtnActive: { backgroundColor: 'transparent', borderBottomColor: Colors.text },
+  igTabIcon: { fontSize: 20, color: Colors.dim },
+  igTabIconActive: { color: Colors.text },
+  igGridWrap: { paddingHorizontal: 0, marginBottom: 0 },
+  igGridThumb: { borderWidth: 0, backgroundColor: Colors.surface, position: 'relative' },
+  igTileBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: '#0009',
+    borderRadius: 999,
+    minWidth: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  igTileBadgeText: { color: Colors.white, fontSize: 11, fontWeight: '800' },
+  igTileCount: {
+    position: 'absolute',
+    left: 6,
+    bottom: 6,
+    backgroundColor: '#0008',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  igTileCountText: { color: Colors.white, fontSize: 11, fontWeight: '800' },
   avatarRow:    { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: -36 },
   avatarActions:{ flexDirection: 'row', alignItems: 'center', gap: 10 },
   avatar:       { width: 76, height: 76, borderRadius: 38, backgroundColor: Colors.card, borderWidth: 4, borderColor: Colors.bg, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
@@ -1127,7 +1419,8 @@ const s = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  statTooltipText: { fontSize: 10, color: Colors.sub, fontWeight: '700' },
+  statTooltipText: { fontSize: 10, color: Colors.sub, fontWeight: '700', textAlign: 'center' },
+  statTooltipHint: { fontSize: 9, color: Colors.dim, fontWeight: '600', textAlign: 'center', marginTop: 2, maxWidth: 140 },
   section:      { marginHorizontal: 20, marginTop: 20, backgroundColor: Colors.card, borderRadius: 20, borderWidth: 1, borderColor: Colors.border2, overflow: 'hidden' },
   sectionTitle: { fontSize: 12, fontWeight: '800', color: Colors.dim, letterSpacing: 0.6, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 6 },
   barHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },

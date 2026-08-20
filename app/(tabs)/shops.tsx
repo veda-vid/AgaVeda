@@ -43,16 +43,26 @@ function formatDistance(value?: number) {
   return `${value.toFixed(1)} km away`;
 }
 
-function formatDateTime(value?: string | null) {
-  if (!value) return 'Not set';
+function formatClockTime(value?: string | null) {
+  if (!value) return null;
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return value;
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed);
+  if (!Number.isNaN(parsed.valueOf())) {
+    return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(parsed);
+  }
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = match[2];
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${minute} ${suffix}`;
+}
+
+function formatShopHours(openTime?: string | null, closeTime?: string | null) {
+  const open = formatClockTime(openTime);
+  const close = formatClockTime(closeTime);
+  if (open && close) return `${open} – ${close}`;
+  return open || close || null;
 }
 
 function normalizeWebsiteUrl(value?: string | null) {
@@ -225,7 +235,6 @@ function ShopDetail({
   const [submitted, setSubmitted] = useState(false);
   const { addItem } = useCartStore();
   const { addNotification } = useAuthStore();
-  const coverUri = resolveShopMediaUrl(shop.cover_url || shop.logo_url);
   const logoUri = resolveShopMediaUrl(shop.logo_url);
   const meta = categoryMeta(shop.category);
 
@@ -264,61 +273,65 @@ function ShopDetail({
     }
   };
 
+  const hours = formatShopHours(shop.open_time, shop.close_time);
+
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={d.root}>
       <View style={d.handle} />
-      <View style={d.hero}>
-        {coverUri ? (
-          <Image source={{ uri: coverUri }} style={d.heroCover} resizeMode="cover" />
-        ) : (
-          <View style={d.heroFallback}>
-            <Text style={d.heroFallbackEmoji}>{meta.emoji}</Text>
+
+      <View style={d.igIdentityRow}>
+        <View style={d.igAvatarRing}>
+          {logoUri
+            ? <Image source={{ uri: logoUri }} style={d.igAvatar} resizeMode="cover" />
+            : <Text style={d.igAvatarFallback}>{meta.emoji}</Text>}
+        </View>
+        <View style={d.igStatsRow}>
+          <View style={d.igStat}>
+            <Text style={d.igStatVal}>{shop.total_products}</Text>
+            <Text style={d.igStatLabel}>posts</Text>
           </View>
-        )}
-        <View style={d.heroOverlay} />
-        <View style={d.heroContent}>
-          <View style={d.heroLogoWrap}>
-            {logoUri ? <Image source={{ uri: logoUri }} style={d.heroLogo} resizeMode="cover" /> : <Text style={d.heroLogoFallback}>{meta.emoji}</Text>}
+          <View style={d.igStat}>
+            <Text style={d.igStatVal}>{shop.total_followers}</Text>
+            <Text style={d.igStatLabel}>followers</Text>
           </View>
-          <Text style={d.shopName}>{shop.name}</Text>
-          <Text style={d.heroMeta}>{meta.label} · {shop.city} · {shop.is_open ? 'Open now' : 'Closed'}</Text>
+          <View style={d.igStat}>
+            <Text style={d.igStatVal}>{shop.avg_rating.toFixed(1)}</Text>
+            <Text style={d.igStatLabel}>rating</Text>
+          </View>
         </View>
       </View>
 
-      <Text style={d.desc}>{shop.description || `Explore what ${shop.name} has for your neighborhood.`}</Text>
-      <View style={d.statsRow}>
-        {[
-          [shop.total_products.toString(), 'Products'],
-          [shop.total_followers.toString(), 'Followers'],
-          [shop.avg_rating.toFixed(1), 'Rating'],
-        ].map(([value, label]) => (
-          <View key={label} style={d.stat}>
-            <Text style={d.statVal}>{value}</Text>
-            <Text style={d.statLabel}>{label}</Text>
+      <View style={d.igBioBlock}>
+        <Text style={d.igName}>{shop.name}</Text>
+        <Text style={d.igMeta}>{meta.label} · {shop.city}</Text>
+        <View style={d.igHoursRow}>
+          <View style={[d.igOpenPill, { backgroundColor: shop.is_open ? Colors.green + '22' : Colors.dim + '22' }]}>
+            <Text style={[d.igOpenPillText, { color: shop.is_open ? Colors.green : Colors.sub }]}>
+              {shop.is_open ? 'Open now' : 'Closed'}
+            </Text>
           </View>
-        ))}
-      </View>
-
-      <View style={d.infoBlock}>
-        <Text style={d.infoText}>Address: {shop.address}</Text>
-        <Text style={d.infoText}>Phone: {shop.phone}</Text>
-        <Text style={d.infoText}>Email: {shop.email}</Text>
-        <Text style={d.infoText}>Opens: {formatDateTime(shop.open_time)}</Text>
-        <Text style={d.infoText}>Closes: {formatDateTime(shop.close_time)}</Text>
+          <Text style={d.igHoursText}>{hours ? `🕒 ${hours}` : '🕒 Shop hours not set'}</Text>
+        </View>
+        <Text style={d.desc}>{shop.description || `Explore what ${shop.name} has for your neighborhood.`}</Text>
+        <Text style={d.igAddress} numberOfLines={2}>{shop.address}</Text>
       </View>
 
       <View style={d.ctaRow}>
-        <TouchableOpacity style={d.ctaPrimary} onPress={() => Linking.openURL(`tel:${shop.phone}`)}>
-          <Text style={d.ctaPrimaryText}>Call Shop</Text>
+        <TouchableOpacity style={d.igActionBtn} onPress={() => Linking.openURL(`tel:${shop.phone}`)}>
+          <Text style={d.igActionBtnText}>Call</Text>
         </TouchableOpacity>
         {shop.whatsapp ? (
           <TouchableOpacity
-            style={d.ctaSecondary}
+            style={d.igActionBtn}
             onPress={() => Linking.openURL(`https://wa.me/${shop.whatsapp}`)}
           >
-            <Text style={d.ctaSecondaryText}>WhatsApp</Text>
+            <Text style={d.igActionBtnText}>WhatsApp</Text>
           </TouchableOpacity>
-        ) : null}
+        ) : (
+          <TouchableOpacity style={d.igActionBtn} onPress={() => Linking.openURL(`mailto:${shop.email}`)}>
+            <Text style={d.igActionBtnText}>Email</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {shop.owner_id === userId ? (
@@ -342,20 +355,31 @@ function ShopDetail({
         </View>
       ) : null}
 
-      {isBuyer && products.length > 0 ? (
+      {products.length > 0 ? (
         <View style={d.section}>
-          <Text style={d.sectionTitle}>Popular Products</Text>
-          {products.slice(0, 6).map((product: any) => (
-            <View key={product.id} style={d.productRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={d.productTitle}>{product.title}</Text>
-                <Text style={d.productPrice}>₹{Number(product.discounted_price ?? product.price).toFixed(0)}</Text>
-              </View>
-              <TouchableOpacity style={d.addBtn} onPress={() => addProduct(product.id)}>
-                <Text style={d.addBtnText}>Add</Text>
+          <View style={d.igGrid}>
+            {products.slice(0, 9).map((product: any) => (
+              <TouchableOpacity
+                key={product.id}
+                style={d.igGridItem}
+                activeOpacity={0.9}
+                onPress={() => isBuyer ? addProduct(product.id) : undefined}
+              >
+                {product.images?.[0] ? (
+                  <Image source={{ uri: product.images[0] }} style={d.igGridImg} resizeMode="cover" />
+                ) : (
+                  <View style={d.igGridFallback}>
+                    <Text style={d.igGridEmoji}>{meta.emoji}</Text>
+                  </View>
+                )}
+                {isBuyer ? (
+                  <View style={d.igGridOverlay}>
+                    <Text style={d.igGridPrice}>₹{Number(product.discounted_price ?? product.price).toFixed(0)}</Text>
+                  </View>
+                ) : null}
               </TouchableOpacity>
-            </View>
-          ))}
+            ))}
+          </View>
         </View>
       ) : null}
 
@@ -840,7 +864,49 @@ const d = StyleSheet.create({
   heroLogoFallback: { fontSize: 32 },
   shopName: { fontSize: 24, fontWeight: '800', color: Colors.white, marginBottom: 6 },
   heroMeta: { fontSize: 13, color: '#FFF3EB', fontWeight: '600' },
-  desc: { fontSize: 14, color: Colors.sub, lineHeight: 21 },
+  desc: { fontSize: 13, color: Colors.text, lineHeight: 19, marginTop: 6 },
+  igIdentityRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, paddingBottom: 12, gap: 16 },
+  igAvatarRing: {
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    borderWidth: 2,
+    borderColor: Colors.border2,
+    overflow: 'hidden',
+    backgroundColor: Colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  igAvatar: { width: '100%', height: '100%' },
+  igAvatarFallback: { fontSize: 36 },
+  igStatsRow: { flex: 1, flexDirection: 'row', justifyContent: 'space-around' },
+  igStat: { alignItems: 'center' },
+  igStatVal: { color: Colors.text, fontSize: 18, fontWeight: '800' },
+  igStatLabel: { color: Colors.text, fontSize: 13, marginTop: 2 },
+  igBioBlock: { paddingHorizontal: 4, paddingBottom: 4 },
+  igName: { color: Colors.text, fontSize: 14, fontWeight: '800' },
+  igMeta: { color: Colors.sub, fontSize: 13, marginTop: 2 },
+  igHoursRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  igOpenPill: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  igOpenPillText: { fontSize: 12, fontWeight: '800' },
+  igHoursText: { color: Colors.text, fontSize: 13, fontWeight: '600' },
+  igAddress: { color: Colors.sub, fontSize: 12, marginTop: 6 },
+  igActionBtn: {
+    flex: 1,
+    backgroundColor: Colors.card,
+    borderRadius: 10,
+    minHeight: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  igActionBtnText: { color: Colors.text, fontSize: 13, fontWeight: '700' },
+  igGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -16, gap: 1 },
+  igGridItem: { width: '32.8%', aspectRatio: 1, backgroundColor: Colors.surface, overflow: 'hidden' },
+  igGridImg: { width: '100%', height: '100%' },
+  igGridFallback: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  igGridEmoji: { fontSize: 28, opacity: 0.5 },
+  igGridOverlay: { position: 'absolute', left: 6, bottom: 6, backgroundColor: '#0008', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3 },
+  igGridPrice: { color: Colors.white, fontSize: 11, fontWeight: '800' },
   statsRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
   stat: {
     flex: 1,
@@ -863,7 +929,7 @@ const d = StyleSheet.create({
     marginTop: 16,
   },
   infoText: { color: Colors.text, fontSize: 13, lineHeight: 19 },
-  ctaRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  ctaRow: { flexDirection: 'row', gap: 8, marginTop: 12, paddingHorizontal: 4 },
   ctaPrimary: {
     flex: 1,
     backgroundColor: Colors.orange,

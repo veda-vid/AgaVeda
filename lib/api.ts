@@ -212,14 +212,60 @@ export const createProduct = async (product: Omit<Product, 'id' | 'created_at' |
 
 // ─── POSTS / FEED ─────────────────────────────────────────────────────
 
-export async function feedFromPostsTable(page = 0): Promise<Post[]> {
+async function hydratePostsWithUserState(posts: Post[], userId?: string | null): Promise<Post[]> {
+  if (!posts.length) return posts;
+  const ids = posts.map(p => p.id).filter(Boolean);
+  if (!ids.length) return posts;
+
+  const empty = { data: [] as Array<{ post_id: string }> };
+  const [likesRes, savesRes, mineRepostsRes, allRepostsRes, commentsRes] = await Promise.all([
+    userId
+      ? supabase.from('post_likes').select('post_id').eq('user_id', userId).in('post_id', ids)
+      : Promise.resolve(empty),
+    userId
+      ? supabase.from('saved_posts').select('post_id').eq('user_id', userId).in('post_id', ids)
+      : Promise.resolve(empty),
+    userId
+      ? supabase.from('reposts').select('post_id').eq('user_id', userId).in('post_id', ids)
+      : Promise.resolve(empty),
+    supabase.from('reposts').select('post_id').in('post_id', ids),
+    supabase.from('comments').select('post_id').in('post_id', ids),
+  ]);
+
+  const liked = new Set((likesRes.data ?? []).map((row: any) => row.post_id));
+  const saved = new Set((savesRes.data ?? []).map((row: any) => row.post_id));
+  const reposted = new Set((mineRepostsRes.data ?? []).map((row: any) => row.post_id));
+  const repostCounts = new Map<string, number>();
+  for (const row of allRepostsRes.data ?? []) {
+    const id = (row as any).post_id;
+    if (!id) continue;
+    repostCounts.set(id, (repostCounts.get(id) ?? 0) + 1);
+  }
+  const commentCounts = new Map<string, number>();
+  for (const row of commentsRes.data ?? []) {
+    const id = (row as any).post_id;
+    if (!id) continue;
+    commentCounts.set(id, (commentCounts.get(id) ?? 0) + 1);
+  }
+
+  return posts.map(post => ({
+    ...post,
+    is_liked: liked.has(post.id),
+    is_saved: saved.has(post.id),
+    is_reposted: reposted.has(post.id),
+    total_reposts: repostCounts.get(post.id) ?? 0,
+    total_comments: Math.max(post.total_comments ?? 0, commentCounts.get(post.id) ?? 0),
+  }));
+}
+
+export async function feedFromPostsTable(page = 0, userId?: string): Promise<Post[]> {
   const { data, error } = await supabase
     .from('posts')
     .select('*, shop:shops(id,name,logo_url,category,avg_rating,is_open)')
     .order('created_at', { ascending: false })
     .range(page * PAGE, (page + 1) * PAGE - 1);
   if (error) throw error;
-  return (data ?? []).map((p: any) => ({
+  const mapped = (data ?? []).map((p: any) => ({
     ...p,
     shop_name: p.shop?.name,
     shop_logo: p.shop?.logo_url,
@@ -227,40 +273,46 @@ export async function feedFromPostsTable(page = 0): Promise<Post[]> {
     shop_avg_rating: p.shop?.avg_rating,
     shop_is_open: p.shop?.is_open,
     distance_km: 0,
-  }));
+  })) as Post[];
+  return hydratePostsWithUserState(mapped, userId);
 }
 
-export const getFeed = async (lat: number, lng: number, radiusKm: number, page = 0) => {
+export const getFeed = async (lat: number, lng: number, radiusKm: number, page = 0, userId?: string) => {
   try {
     const { data, error } = await withTimeout(
       supabase
-        .rpc('feed_within_radius', { user_lat: lat, user_lng: lng, radius_km: radiusKm })
+        .rpc('feed_within_radius', { 
+          user_lat: lat, 
+          user_lng: lng, 
+          radius_km: radiusKm, 
+          p_user_id: userId || null 
+        })
         .range(page * PAGE, (page + 1) * PAGE - 1),
       API_MS,
       'feed',
     );
     if (error) throw error;
-    return (data ?? []) as Post[];
+    return hydratePostsWithUserState((data ?? []) as Post[], userId);
   } catch {
-    return withTimeout(feedFromPostsTable(page), API_MS, 'feed-fallback');
+    return withTimeout(feedFromPostsTable(page, userId), API_MS, 'feed-fallback');
   }
 };
 
-export const getPostsByShop = async (shopId: string): Promise<Post[]> => {
+export const getPostsByShop = async (shopId: string, userId?: string): Promise<Post[]> => {
   const { data, error } = await supabase
     .from('posts')
     .select('*')
     .eq('shop_id', shopId)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return (data ?? []) as Post[];
+  return hydratePostsWithUserState((data ?? []) as Post[], userId);
 };
 
 export const likePost = async (userId: string, postId: string) => {
   const { error } = await supabase
     .from('post_likes')
-    .upsert({ user_id: userId, post_id: postId }, { onConflict: 'user_id,post_id' });
-  if (error) throw error;
+    .insert({ user_id: userId, post_id: postId });
+  if (error && error.code !== '23505') throw error;
 };
 
 export const unlikePost = async (userId: string, postId: string) => {
@@ -272,11 +324,27 @@ export const unlikePost = async (userId: string, postId: string) => {
   if (error) throw error;
 };
 
+export const repostPost = async (userId: string, postId: string, shopId: string) => {
+  const { error } = await supabase
+    .from('reposts')
+    .insert({ user_id: userId, post_id: postId, shop_id: shopId });
+  if (error && error.code !== '23505') throw error;
+};
+
+export const unrepostPost = async (userId: string, postId: string) => {
+  const { error } = await supabase
+    .from('reposts')
+    .delete()
+    .eq('user_id', userId)
+    .eq('post_id', postId);
+  if (error) throw error;
+};
+
 export const savePost = async (userId: string, postId: string) => {
   const { error } = await supabase
     .from('saved_posts')
-    .upsert({ user_id: userId, post_id: postId }, { onConflict: 'user_id,post_id' });
-  if (error) throw error;
+    .insert({ user_id: userId, post_id: postId });
+  if (error && error.code !== '23505') throw error;
 };
 
 export const unsavePost = async (userId: string, postId: string) => {
@@ -307,6 +375,32 @@ export const getSavedPosts = async (userId: string): Promise<Post[]> => {
         shop_avg_rating: post.shop?.avg_rating,
         shop_is_open: post.shop?.is_open,
         saved_at: row.created_at,
+        is_saved: true,
+      };
+    })
+    .filter(Boolean) as Post[];
+};
+
+export const getRepostedPosts = async (userId: string): Promise<Post[]> => {
+  const { data, error } = await supabase
+    .from('reposts')
+    .select('created_at, post:posts(*, shop:shops(id,name,logo_url,category,avg_rating,is_open))')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? [])
+    .map((row: any) => {
+      const post = row.post;
+      if (!post) return null;
+      return {
+        ...post,
+        shop_name: post.shop?.name,
+        shop_logo: post.shop?.logo_url,
+        shop_category: post.shop?.category,
+        shop_avg_rating: post.shop?.avg_rating,
+        shop_is_open: post.shop?.is_open,
+        reposted_at: row.created_at,
+        is_reposted: true,
       };
     })
     .filter(Boolean) as Post[];
@@ -361,7 +455,7 @@ export const getFollowingFeed = async (userId: string, page = 0, followedShopIds
       'following-feed',
     );
     if (error) throw error;
-    return (data ?? []) as Post[];
+    return hydratePostsWithUserState((data ?? []) as Post[], userId);
   } catch {
     // Client-side fallback using followed shop ids
     if (!followedShopIds.length) return [];
@@ -376,7 +470,7 @@ export const getFollowingFeed = async (userId: string, page = 0, followedShopIds
       'following-fallback',
     );
     if (error) throw error;
-    return (data ?? []).map((p: any) => ({
+    const mapped = (data ?? []).map((p: any) => ({
       ...p,
       shop_name: p.shop?.name,
       shop_logo: p.shop?.logo_url,
@@ -385,6 +479,7 @@ export const getFollowingFeed = async (userId: string, page = 0, followedShopIds
       shop_is_open: p.shop?.is_open,
       distance_km: 0,
     })) as Post[];
+    return hydratePostsWithUserState(mapped, userId);
   }
 };
 

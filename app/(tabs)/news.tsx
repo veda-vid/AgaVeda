@@ -14,10 +14,20 @@ import {
   Linking,
   ScrollView,
   useWindowDimensions,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { addCityNewsComment, getCityNews, getCityNewsComments, likeCityNews, unlikeCityNews } from '../../lib/api';
+import {
+  addLiveDailyComment,
+  applyDailyInteractions,
+  detectDailyLocation,
+  fetchDailyPublicFeed,
+  getLiveDailyComments,
+  isLiveDailyItem,
+  toggleLiveDailyLike,
+} from '../../lib/dailyPublicFeed';
 import { Colors, Fonts } from '../../constants/theme';
 import type { CityNews, CityNewsCategory, CityNewsComment } from '../../types';
 
@@ -55,10 +65,14 @@ function NewsTile({
   item,
   width,
   onPress,
+  onLike,
+  onShare,
 }: {
   item: CityNews;
   width: number;
   onPress: (item: CityNews) => void;
+  onLike: (item: CityNews) => void;
+  onShare: (item: CityNews) => void;
 }) {
   const meta = categoryMeta(item.category);
 
@@ -82,8 +96,15 @@ function NewsTile({
       <View style={s.tileFooter}>
         <Text style={s.tileTitle} numberOfLines={2}>{item.title}</Text>
         <View style={s.tileMetaRow}>
-          <Text style={s.tileMetaText}>♥ {item.total_likes}</Text>
-          <Text style={s.tileMetaText}>💬 {item.total_comments}</Text>
+          <TouchableOpacity onPress={() => onLike(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={s.tileMetaText}>{item.is_liked ? '❤️' : '♥'} {item.total_likes}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => onPress(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={s.tileMetaText}>💬 {item.total_comments}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => onShare(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={s.tileMetaText}>⤴ Share</Text>
+          </TouchableOpacity>
           <Text style={s.tileMetaText}>{formatTimeAgo(item.created_at)}</Text>
         </View>
       </View>
@@ -99,6 +120,7 @@ function NewsViewer({
   setCommentText,
   onLikeToggle,
   onSubmitComment,
+  onShare,
   onClose,
 }: {
   item: CityNews;
@@ -108,6 +130,7 @@ function NewsViewer({
   setCommentText: (value: string) => void;
   onLikeToggle: () => void;
   onSubmitComment: () => void;
+  onShare: () => void;
   onClose: () => void;
 }) {
   const meta = categoryMeta(item.category);
@@ -140,6 +163,9 @@ function NewsViewer({
             <Text style={[v.actionIcon, item.is_liked && v.actionIconActive]}>{item.is_liked ? '❤️' : '🤍'}</Text>
           </TouchableOpacity>
           <Text style={v.actionIcon}>💬</Text>
+          <TouchableOpacity onPress={onShare}>
+            <Text style={v.actionIcon}>⤴</Text>
+          </TouchableOpacity>
         </View>
 
         <Text style={v.likesText}>{item.total_likes} likes</Text>
@@ -195,19 +221,34 @@ export default function NewsScreen() {
   const [comments, setComments] = useState<CityNewsComment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
+  const [detectedCity, setDetectedCity] = useState(profile?.city ?? '');
   const { width } = useWindowDimensions();
 
-  const city = profile?.city ?? '';
+  const city = detectedCity || profile?.city || '';
   const columns = width >= 1000 ? 4 : 3;
   const gap = 2;
   const tileWidth = Math.floor((width - 32 - gap * (columns - 1)) / columns);
 
   const load = async (reset: boolean) => {
-    if (!city || !profile?.id) return;
+    if (!profile?.id) return;
     if (!reset) setRefreshing(true);
     try {
-      const data = await getCityNews(city, profile.id, 60);
-      setItems((data ?? []) as CityNews[]);
+      const location = await detectDailyLocation(profile);
+      setDetectedCity(location.city);
+      const [liveItems, storedItems] = await Promise.all([
+        fetchDailyPublicFeed(location).catch(() => [] as CityNews[]),
+        getCityNews(location.city, profile.id, 60).catch(() => [] as CityNews[]),
+      ]);
+      const seen = new Set<string>();
+      const merged = [...liveItems, ...storedItems].filter(item => {
+        const key = item.title.trim().toLowerCase();
+        if (seen.has(key) || seen.has(item.id)) return false;
+        seen.add(key);
+        seen.add(item.id);
+        return true;
+      });
+      const nextItems = await applyDailyInteractions(merged, profile.id);
+      setItems(nextItems);
     } catch (error) {
       console.error(error);
       setItems([]);
@@ -222,19 +263,22 @@ export default function NewsScreen() {
     setLoading(true);
     load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.id, profile?.city]);
+  }, [profile?.id]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || !profile?.id) return;
     setCommentsLoading(true);
-    getCityNewsComments(selected.id)
+    const request = isLiveDailyItem(selected.id)
+      ? getLiveDailyComments(profile.id, selected.id)
+      : getCityNewsComments(selected.id);
+    request
       .then(setComments)
       .catch(error => {
         console.error(error);
         setComments([]);
       })
       .finally(() => setCommentsLoading(false));
-  }, [selected?.id]);
+  }, [selected?.id, profile?.id]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -253,36 +297,48 @@ export default function NewsScreen() {
     setSelected(nextSelected);
   };
 
-  const handleLikeToggle = async () => {
-    if (!profile || !selected) return;
-    const currentlyLiked = !!selected.is_liked;
-    const nextItems = items.map(item => item.id === selected.id
-      ? {
-          ...item,
-          is_liked: !currentlyLiked,
-          total_likes: Math.max(0, item.total_likes + (currentlyLiked ? -1 : 1)),
-        }
+  const applyLikeState = (newsId: string, liked: boolean, totalLikes: number) => {
+    const nextItems = items.map(item => item.id === newsId
+      ? { ...item, is_liked: liked, total_likes: totalLikes }
       : item);
     setItems(nextItems);
     updateSelectedFromItems(nextItems);
+  };
 
+  const handleLikeToggle = async (item = selected) => {
+    if (!profile || !item) return;
+    const currentlyLiked = !!item.is_liked;
+    applyLikeState(item.id, !currentlyLiked, Math.max(0, item.total_likes + (currentlyLiked ? -1 : 1)));
     try {
-      if (currentlyLiked) await unlikeCityNews(profile.id, selected.id);
-      else await likeCityNews(profile.id, selected.id);
+      if (isLiveDailyItem(item.id)) {
+        await toggleLiveDailyLike(profile.id, item);
+      } else if (currentlyLiked) {
+        await unlikeCityNews(profile.id, item.id);
+      } else {
+        await likeCityNews(profile.id, item.id);
+      }
     } catch (error) {
       console.error(error);
-      const revertedItems = items.map(item => item.id === selected.id
-        ? { ...item, is_liked: currentlyLiked, total_likes: item.total_likes }
-        : item);
-      setItems(revertedItems);
-      updateSelectedFromItems(revertedItems);
+      applyLikeState(item.id, currentlyLiked, item.total_likes);
     }
+  };
+
+  const handleShare = async (item = selected) => {
+    if (!item) return;
+    try {
+      await Share.share({
+        title: item.title,
+        message: `${item.title}\n${item.body}\n${item.source_url || ''}`.trim(),
+      });
+    } catch {}
   };
 
   const handleSubmitComment = async () => {
     if (!profile || !selected || !commentText.trim()) return;
     try {
-      const comment = await addCityNewsComment(profile.id, selected.id, commentText.trim());
+      const comment = isLiveDailyItem(selected.id)
+        ? await addLiveDailyComment(profile.id, selected.id, commentText.trim(), profile)
+        : await addCityNewsComment(profile.id, selected.id, commentText.trim());
       const nextItems = items.map(item => item.id === selected.id
         ? { ...item, total_comments: item.total_comments + 1 }
         : item);
@@ -342,7 +398,15 @@ export default function NewsScreen() {
         key={`news-grid-${columns}`}
         numColumns={columns}
         keyExtractor={item => item.id}
-        renderItem={({ item }) => <NewsTile item={item} width={tileWidth} onPress={setSelected} />}
+        renderItem={({ item }) => (
+          <NewsTile
+            item={item}
+            width={tileWidth}
+            onPress={setSelected}
+            onLike={handleLikeToggle}
+            onShare={handleShare}
+          />
+        )}
         columnWrapperStyle={s.gridRow}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(false)} tintColor={Colors.orange} />}
         contentContainerStyle={s.gridContent}
@@ -365,8 +429,9 @@ export default function NewsScreen() {
               commentsLoading={commentsLoading}
               commentText={commentText}
               setCommentText={setCommentText}
-              onLikeToggle={handleLikeToggle}
+              onLikeToggle={() => handleLikeToggle(selected)}
               onSubmitComment={handleSubmitComment}
+              onShare={() => handleShare(selected)}
               onClose={() => {
                 setSelected(null);
                 setComments([]);

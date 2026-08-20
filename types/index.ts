@@ -136,12 +136,14 @@ export interface Post {
   ad_cta_url: string | null;
   total_likes: number;
   total_comments: number;
+  total_reposts?: number;
   created_at: string;
   // joined
   shop?: Shop;
   product?: Product;
   is_liked?: boolean;
   is_saved?: boolean;
+  is_reposted?: boolean;
 }
 
 export interface SellerCompetitiveProfile {
