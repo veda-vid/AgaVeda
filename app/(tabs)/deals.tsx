@@ -1,36 +1,40 @@
 // app/(tabs)/deals.tsx — Discounted products
-import { useState, useEffect } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, StyleSheet } from 'react-native';
+import { useState, useEffect, useCallback } from 'react';
+import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { useAuthStore } from '../../stores/authStore';
 import { getDiscountedProducts } from '../../lib/api';
+import { useScreenRefresh } from '../../hooks/useScreenRefresh';
 import { Colors } from '../../constants/theme';
 
 export default function DealsScreen() {
   const profile = useAuthStore(s => s.profile);
-  const [items,     setItems]     = useState<any[]>([]);
-  const [loading,   setLoading]   = useState(true);
-  const [refreshing,setRefreshing]= useState(false);
-  const [filter,    setFilter]    = useState('all');
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+
+  const loadDeals = useCallback(async () => {
+    if (!profile) return;
+    try {
+      const data = await getDiscountedProducts(
+        profile.lat ?? 19.076,
+        profile.lng ?? 72.877,
+        profile.radius_km ?? 5,
+      );
+      setItems(data ?? []);
+    } catch {
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [profile]);
 
   useEffect(() => {
     if (!profile) return;
-    let cancelled = false;
     setLoading(true);
-    getDiscountedProducts(profile.lat ?? 19.076, profile.lng ?? 72.877, profile.radius_km ?? 5)
-      .then(data => { if (!cancelled) setItems(data ?? []); })
-      .catch(() => { if (!cancelled) setItems([]); })
-      .finally(() => { if (!cancelled) { setLoading(false); setRefreshing(false); } });
-    return () => { cancelled = true; };
-  }, [profile?.id, profile?.lat, profile?.lng, profile?.radius_km]);
+    loadDeals();
+  }, [profile?.id, profile?.lat, profile?.lng, profile?.radius_km, loadDeals]);
 
-  const onRefresh = () => {
-    if (!profile) return;
-    setRefreshing(true);
-    getDiscountedProducts(profile.lat ?? 19.076, profile.lng ?? 72.877, profile.radius_km ?? 5)
-      .then(setItems)
-      .catch(() => {})
-      .finally(() => setRefreshing(false));
-  };
+  const { refreshControl, scrollHandlers } = useScreenRefresh(loadDeals);
 
   const pctGroups = ['all', '20+', '30+', '40+', '50+'];
   const filtered = filter === 'all' ? items : items.filter(i => i.discount_pct >= parseInt(filter));
@@ -70,7 +74,6 @@ export default function DealsScreen() {
         </View>
         <Text style={s.sub}>Exclusive discounts from local shops near you</Text>
 
-        {/* Filter chips */}
         <View style={s.filtersRow}>
           {pctGroups.map(g => (
             <TouchableOpacity key={g} onPress={() => setFilter(g)} style={[s.chip, filter === g && s.chipActive]}>
@@ -80,7 +83,6 @@ export default function DealsScreen() {
         </View>
       </View>
 
-      {/* Flash banner */}
       <View style={s.banner}>
         <Text style={s.bannerTitle}>⚡ Flash Sale — Up to 50% OFF</Text>
         <Text style={s.bannerSub}>Limited stock. Grab before it's gone!</Text>
@@ -92,7 +94,8 @@ export default function DealsScreen() {
             data={filtered}
             keyExtractor={i => i.id}
             renderItem={renderItem}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.orange} />}
+            refreshControl={refreshControl}
+            {...scrollHandlers}
             contentContainerStyle={{ padding: 16, paddingBottom: 80, gap: 12 }}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={

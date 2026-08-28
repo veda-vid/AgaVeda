@@ -63,7 +63,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (!isInitialized && !isCallbackRoute) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bg }}>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0F172A' }}>
         <ActivityIndicator color={Colors.orange} size="large" />
       </View>
     );
@@ -89,6 +89,8 @@ export default function RootLayout() {
           <Stack.Screen name="admin" />
           <Stack.Screen name="seller/upload" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
           <Stack.Screen name="seller/shop" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="seller/enquiries" options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="chat/[shopId]" options={{ animation: 'slide_from_right' }} />
         </Stack>
       </AuthGuard>
       <Toast />

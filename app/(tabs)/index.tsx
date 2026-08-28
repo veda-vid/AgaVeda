@@ -1,24 +1,47 @@
 // app/(tabs)/index.tsx — Instagram-style feed (buyer following + seller create)
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, TextInput,
-  Image, ActivityIndicator, RefreshControl, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView, Share, Platform,
+  View, Text, TouchableOpacity, TextInput,
+  Image, ActivityIndicator, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView, Platform,
+  type ViewToken,
 } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
 import { useCartStore } from '../../stores/cartStore';
 import {
-  getFeed, getFollowingFeed, likePost, unlikePost, repostPost, unrepostPost, savePost, unsavePost,
-  getComments, addComment, getStories, createStory, getReels, createReel,
-  getShopByOwner, uploadImage, createPost, feedFromPostsTable,
+  getFeed, getFollowingFeed,
+  getStories, createStory, getUnifiedSparksFeed, createReel,
+  getShopByOwner, uploadImage, createPost,
+  getSellerDashboardMetrics, getServiceProDashboardStats, setServiceProviderAvailability,
+  type ServiceProDashboardStats,
 } from '../../lib/api';
+import { loadHomeFeed } from '../../lib/feedEngine';
 import { getSupabaseConfig } from '../../lib/config';
+import { useScreenRefresh } from '../../hooks/useScreenRefresh';
 import { Colors, Fonts } from '../../constants/theme';
-import type { Story, Reel } from '../../types';
+import { PostCard } from '../../components/feed/PostCard';
+import { MarketTicker } from '../../components/feed/MarketTicker';
+import { FeedHydrationSkeleton, FeedRegionalBanner, FeedStoriesSkeleton } from '../../components/feed/FeedEngine';
+import { SellerHeaderHero } from '../../components/seller/SellerHeaderHero';
+import { ServiceProHeaderHero } from '../../components/seller/ServiceProHeaderHero';
+import {
+  isBuyerRole,
+  isMerchantSeller as checkMerchantSeller,
+  isServiceProvider as checkServiceProvider,
+  isSellerLike as checkSellerLike,
+  getRoleBadgeLabel,
+} from '../../stores/roleUtils';
+import { MediaSourceSheet, type MediaSourceChoice } from '../../components/media/MediaSourceSheet';
+import { SparksFeed, type SparkItem } from '../../components/feed/SparksFeed';
+import { SparkComposer } from '../../components/feed/SparkComposer';
+import { usePostInteractionsStore } from '../../stores/postInteractionsStore';
+import type { Story, SellerDashboardMetrics } from '../../types';
 
 const W = Dimensions.get('window').width;
+const WINDOW_HEIGHT = Dimensions.get('window').height;
 const { url: SUPABASE_URL } = getSupabaseConfig();
 
 function resolveMediaUrl(value?: string | null) {
@@ -73,358 +96,6 @@ function getTextFontStyle(id?: string) {
   return id === 'headline' ? TEXT_FONT_STYLES.bold : TEXT_FONT_STYLES.classic;
 }
 
-function PostCard({
-  post, userId, isBuyer, onAddToCart,
-}: {
-  post: any;
-  userId: string;
-  isBuyer: boolean;
-  onAddToCart?: (productId: string, shopId: string) => void;
-}) {
-  const shopLogoUri = resolveMediaUrl(post.shop_logo);
-  const [liked, setLiked] = useState(post.is_liked ?? false);
-  const [saved, setSaved] = useState(post.is_saved ?? false);
-  const [reposted, setReposted] = useState(post.is_reposted ?? false);
-  const [likes, setLikes] = useState(post.total_likes ?? 0);
-  const [reposts, setReposts] = useState(post.total_reposts ?? 0);
-  const [commentCount, setCommentCount] = useState(post.total_comments ?? 0);
-  const [showComments, setShowComments] = useState(false);
-  const [showPostMenu, setShowPostMenu] = useState(false);
-  const [comments, setComments] = useState<any[]>([]);
-  const [commentText, setCommentText] = useState('');
-  const [loadingComments, setLoadingComments] = useState(false);
-  const [reposting, setReposting] = useState(false);
-
-  useEffect(() => {
-    setLiked(!!post.is_liked);
-    setSaved(!!post.is_saved);
-    setReposted(!!post.is_reposted);
-    setLikes(post.total_likes ?? 0);
-    setReposts(post.total_reposts ?? 0);
-    setCommentCount(post.total_comments ?? 0);
-  }, [post.id, post.is_liked, post.is_saved, post.is_reposted, post.total_likes, post.total_reposts, post.total_comments]);
-
-  const handleLike = async () => {
-    const next = !liked;
-    setLiked(next);
-    setLikes((l: number) => l + (next ? 1 : -1));
-    try {
-      if (next) await likePost(userId, post.id);
-      else await unlikePost(userId, post.id);
-    } catch {}
-  };
-
-  const handleSave = async () => {
-    const next = !saved;
-    setSaved(next);
-    try {
-      if (next) await savePost(userId, post.id);
-      else await unsavePost(userId, post.id);
-    } catch {}
-  };
-
-  const handleRepost = async () => {
-    if (reposting) return;
-    const shopId = post.shop_id || post.shop?.id;
-    if (!shopId) {
-      Alert.alert('Error', 'Could not repost this item.');
-      return;
-    }
-
-    setReposting(true);
-    const next = !reposted;
-    setReposted(next);
-    setReposts((r: number) => Math.max(0, r + (next ? 1 : -1)));
-    setShowPostMenu(false);
-
-    try {
-      if (next) await repostPost(userId, post.id, shopId);
-      else await unrepostPost(userId, post.id);
-    } catch {
-      setReposted(!next);
-      setReposts((r: number) => Math.max(0, r - (next ? 1 : -1)));
-      Alert.alert('Error', 'Could not repost. Please try again.');
-    } finally {
-      setReposting(false);
-    }
-  };
-
-  const handleShare = async () => {
-    try {
-      const shareText = `Check out this from ${post.shop_name}: ${post.caption || 'Amazing product!'}\n\nhttps://cityconnect.app/post/${post.id}`;
-      await Share.share({ 
-        message: shareText, 
-        title: `${post.shop_name} on Vedastya`,
-        url: `https://cityconnect.app/post/${post.id}`
-      });
-    } catch {}
-  };
-
-  const handleReport = () => {
-    setShowPostMenu(false);
-    Alert.alert(
-      'Report Post',
-      'Why are you reporting this post?',
-      [
-        { text: 'Spam', onPress: () => Alert.alert('Reported', 'Thank you for reporting. We will review this content.') },
-        { text: 'Inappropriate content', onPress: () => Alert.alert('Reported', 'Thank you for reporting. We will review this content.') },
-        { text: 'False information', onPress: () => Alert.alert('Reported', 'Thank you for reporting. We will review this content.') },
-        { text: 'Cancel', style: 'cancel' },
-      ]
-    );
-  };
-
-  const handleCopyLink = async () => {
-    setShowPostMenu(false);
-    const postLink = `https://cityconnect.app/post/${post.id}`;
-    
-    // Web clipboard API
-    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
-      try {
-        await navigator.clipboard.writeText(postLink);
-        Alert.alert('Link copied', 'Post link copied to clipboard');
-      } catch {
-        Alert.alert('Link', postLink);
-      }
-    } else {
-      // For mobile, show the link
-      Alert.alert('Post Link', postLink, [
-        { text: 'OK', style: 'default' }
-      ]);
-    }
-  };
-
-  const handleShareToStory = () => {
-    setShowPostMenu(false);
-    Alert.alert('Share to Story', 'This feature will allow you to share this post to your story.');
-  };
-
-  const handleSendToFriend = () => {
-    setShowPostMenu(false);
-    Alert.alert('Send', 'This feature will allow you to send this post to a friend.');
-  };
-
-  const openComments = async () => {
-    setShowComments(true);
-    if (comments.length) return;
-    setLoadingComments(true);
-    try { setComments(await getComments(post.id)); }
-    catch {} finally { setLoadingComments(false); }
-  };
-
-  const submitComment = async () => {
-    if (!commentText.trim()) return;
-    try {
-      const c = await addComment(userId, post.id, commentText.trim());
-      setComments(prev => [...prev, c]);
-      setCommentCount((n: number) => n + 1);
-      setCommentText('');
-    } catch {}
-  };
-
-  const productId = post.product_id || post.product?.id;
-
-  return (
-    <View style={pf.card}>
-      <View style={pf.header}>
-        <View style={pf.shopIcon}>
-          {shopLogoUri
-            ? <Image source={{ uri: shopLogoUri }} style={pf.shopIconImage} resizeMode="cover" />
-            : <Text style={pf.shopEmoji}>🏪</Text>}
-        </View>
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={pf.shopName}>{post.shop_name}</Text>
-            {post.is_ad && <View style={pf.adBadge}><Text style={pf.adText}>Sponsored</Text></View>}
-          </View>
-          <Text style={pf.shopMeta}>
-            {post.shop_category} · {post.distance_km ? `${Number(post.distance_km).toFixed(1)} km · ` : ''}{timeAgo(post.created_at)}
-            {post.shop_avg_rating ? ` · ⭐ ${post.shop_avg_rating}` : ''}
-          </Text>
-        </View>
-        <TouchableOpacity onPress={() => setShowPostMenu(true)} style={pf.menuBtn}>
-          <Text style={pf.menuIcon}>⋯</Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={pf.media}>
-        {(() => {
-          let textCard: {
-            text: string;
-            style?: string;
-            fontStyle?: string;
-            background?: string;
-            textColor?: string;
-          } | null = null;
-          if (typeof post.caption === 'string' && post.caption.startsWith('__TEXT_CARD__')) {
-            try {
-              textCard = JSON.parse(post.caption.slice('__TEXT_CARD__'.length));
-            } catch {
-              textCard = null;
-            }
-          }
-          if (textCard) {
-            return (
-              <View style={[pf.textCard, { backgroundColor: getTextBackground(textCard.background) }]}>
-                <Text
-                  style={[
-                    pf.textCardText,
-                    getTextFontStyle(textCard.fontStyle ?? textCard.style),
-                    { color: getTextColor(textCard.textColor) },
-                  ]}
-                >
-                  {textCard.text}
-                </Text>
-              </View>
-            );
-          }
-          if (post.media_urls?.length > 0) {
-            return <Image source={{ uri: post.media_urls[0] }} style={pf.image} resizeMode="cover" />;
-          }
-          return <View style={pf.imagePlaceholder}><Text style={{ fontSize: 60 }}>🏪</Text></View>;
-        })()}
-        {post.media_type === 'video' && post.media_urls?.length > 0 && (
-          <View style={pf.videoBadge}><Text style={pf.videoBadgeText}>▶</Text></View>
-        )}
-      </View>
-
-      {!post.is_ad && (
-        <View style={pf.actions}>
-          <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-            <TouchableOpacity onPress={handleLike}>
-              <Text style={[pf.actionIcon, liked && { color: Colors.red }]}>{liked ? '❤️' : '🤍'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={openComments}>
-              <Text style={pf.actionIcon}>💬</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleRepost} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <Text style={[pf.actionIconBright, reposted && { color: Colors.green }]}>↻</Text>
-              {reposts > 0 ? (
-                <Text style={[pf.likesText, reposted && { color: Colors.green }]}>{reposts}</Text>
-              ) : null}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleShare}>
-              <Text style={pf.actionIconBright}>⤴</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-            {isBuyer && productId && onAddToCart && (
-              <TouchableOpacity
-                style={pf.cartChip}
-                onPress={() => onAddToCart(productId, post.shop_id)}
-              >
-                <Text style={pf.cartChipText}>🛒 Add</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={() => setShowPostMenu(true)}>
-              <Text style={pf.menuIconSmall}>⋯</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {!post.is_ad && (
-        <View style={pf.caption}>
-          <View style={pf.statsRow}>
-            <Text style={pf.likesText}>{likes} likes</Text>
-            {reposts > 0 && <Text style={pf.repostsText}> · {reposts} reposts</Text>}
-          </View>
-          {typeof post.caption === 'string' && post.caption.startsWith('__TEXT_CARD__') ? (
-            <Text style={pf.captionText}>
-              <Text style={pf.shopNameInline}>{post.shop_name}</Text> shared an update
-            </Text>
-          ) : (
-            <Text style={pf.captionText}>
-              <Text style={pf.shopNameInline}>{post.shop_name}</Text> {post.caption}
-            </Text>
-          )}
-          {commentCount > 0 && !showComments && (
-            <TouchableOpacity onPress={openComments}>
-              <Text style={pf.viewComments}>View all {commentCount} comments</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
-      {showComments && (
-        <View style={pf.commentsSection}>
-          {loadingComments
-            ? <ActivityIndicator color={Colors.orange} style={{ marginVertical: 12 }} />
-            : comments.map(c => (
-              <View key={c.id} style={pf.commentRow}>
-                <View style={pf.commentAvatar}><Text>😊</Text></View>
-                <View style={pf.commentBubble}>
-                  <Text style={pf.commentUser}>{c.user?.name ?? 'User'}</Text>
-                  <Text style={pf.commentText}>{c.text}</Text>
-                </View>
-              </View>
-            ))}
-          <View style={pf.commentInput}>
-            <TextInput
-              value={commentText}
-              onChangeText={setCommentText}
-              placeholder="Add a comment…"
-              placeholderTextColor={Colors.dim}
-              style={pf.commentField}
-            />
-            <TouchableOpacity onPress={submitComment}><Text style={pf.commentPost}>Post</Text></TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      <Modal transparent visible={showPostMenu} animationType="fade" onRequestClose={() => setShowPostMenu(false)}>
-        <Pressable style={pf.menuModalBackdrop} onPress={() => setShowPostMenu(false)}>
-          <View style={pf.menuModalSheet}>
-            <View style={pf.menuModalHandle} />
-            <Text style={pf.menuModalTitle}>More options</Text>
-            
-            <TouchableOpacity style={pf.menuOption} onPress={() => { setShowPostMenu(false); handleRepost(); }}>
-              <Text style={pf.menuOptionIcon}>↻</Text>
-              <Text style={pf.menuOptionText}>{reposted ? 'Remove repost' : 'Repost to profile'}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={pf.menuOption} onPress={() => { setShowPostMenu(false); handleShare(); }}>
-              <Text style={pf.menuOptionIcon}>⤴</Text>
-              <Text style={pf.menuOptionText}>Share to...</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={pf.menuOption} onPress={handleSendToFriend}>
-              <Text style={pf.menuOptionIcon}>💬</Text>
-              <Text style={pf.menuOptionText}>Send to friend</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={pf.menuOption} onPress={handleShareToStory}>
-              <Text style={pf.menuOptionIcon}>📱</Text>
-              <Text style={pf.menuOptionText}>Share to story</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={pf.menuOption} onPress={handleCopyLink}>
-              <Text style={pf.menuOptionIcon}>🔗</Text>
-              <Text style={pf.menuOptionText}>Copy link</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={pf.menuOption} onPress={() => { setShowPostMenu(false); handleSave(); }}>
-              <Text style={pf.menuOptionIcon}>{saved ? '⬛' : '▢'}</Text>
-              <Text style={pf.menuOptionText}>{saved ? 'Remove from saved' : 'Save post'}</Text>
-            </TouchableOpacity>
-
-            <View style={pf.menuDivider} />
-
-            <TouchableOpacity style={[pf.menuOption, pf.menuOptionDanger]} onPress={handleReport}>
-              <Text style={pf.menuOptionIcon}>⚠️</Text>
-              <Text style={[pf.menuOptionText, pf.menuOptionTextDanger]}>Report</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={pf.menuOption} onPress={() => setShowPostMenu(false)}>
-              <Text style={[pf.menuOptionText, { textAlign: 'center', width: '100%' }]}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </Pressable>
-      </Modal>
-    </View>
-  );
-}
-
 export default function FeedScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ create_menu?: string; refresh_feed?: string }>();
@@ -440,22 +111,19 @@ export default function FeedScreen() {
 
   const [posts, setPosts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [feedView, setFeedView] = useState<'posts' | 'sparks'>('posts');
   const [feedMode, setFeedMode] = useState<'nearby' | 'following'>('nearby');
   const [showNotifications, setShowNotifications] = useState(false);
   const [showStoryComposer, setShowStoryComposer] = useState(false);
-  const [showReelComposer, setShowReelComposer] = useState(false);
+  const [showSparkComposer, setShowSparkComposer] = useState(false);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showTextPostComposer, setShowTextPostComposer] = useState(false);
   const [storyDraft, setStoryDraft] = useState('');
-  const [reelDraft, setReelDraft] = useState('');
-  const [reelTags, setReelTags] = useState('');
   const [storyMedia, setStoryMedia] = useState<{ uri: string; type: 'image' | 'video' } | null>(null);
-  const [reelMedia, setReelMedia] = useState<{ uri: string; type: 'image' | 'video' } | null>(null);
   const [stories, setStories] = useState<Story[]>([]);
-  const [reels, setReels] = useState<Reel[]>([]);
+  const [sparks, setSparks] = useState<SparkItem[]>([]);
   const [posting, setPosting] = useState(false);
   const [viewStory, setViewStory] = useState<Story | null>(null);
   const [textPostDraft, setTextPostDraft] = useState('');
@@ -463,6 +131,16 @@ export default function FeedScreen() {
   const [textBackground, setTextBackground] = useState<TextBackground>('sunset');
   const [textColor, setTextColor] = useState<TextColor>('white');
   const [hasShop, setHasShop] = useState<boolean | null>(null);
+  const [sellerShopId, setSellerShopId] = useState<string | null>(null);
+  const [sellerMetrics, setSellerMetrics] = useState<SellerDashboardMetrics | null>(null);
+  const [sellerMetricsLoading, setSellerMetricsLoading] = useState(false);
+  const [showFlashDealSource, setShowFlashDealSource] = useState(false);
+  const [isRegionalFallback, setIsRegionalFallback] = useState(false);
+  const [storiesHydrating, setStoriesHydrating] = useState(true);
+  const [serviceProStats, setServiceProStats] = useState<ServiceProDashboardStats | null>(null);
+  const [serviceProStatsLoading, setServiceProStatsLoading] = useState(false);
+  const [proAvailable, setProAvailable] = useState(false);
+  const [activePostKey, setActivePostKey] = useState<string | null>(null);
 
   const pageRef = useRef(0);
   const loadingRef = useRef(false);
@@ -470,9 +148,22 @@ export default function FeedScreen() {
   const followedRef = useRef(followedShopIds);
   const socialLoadedRef = useRef(false);
   const modeInitializedRef = useRef(false);
+  const effectiveRadiusRef = useRef(profile?.radius_km ?? 5);
 
-  const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
-  const isBuyer = profile?.role === 'buyer';
+  const isSeller = checkSellerLike(profile?.role);
+  const isMerchantSeller = checkMerchantSeller(profile?.role);
+  const isServiceProvider = checkServiceProvider(profile?.role);
+  const isBuyer = isBuyerRole(profile?.role);
+  const roleBadge = getRoleBadgeLabel(profile?.role);
+  const postCacheVersion = usePostInteractionsStore(s => s.version);
+  const setInteractionsRefreshing = usePostInteractionsStore(s => s.setRefreshing);
+
+  const postsViewabilityConfig = useRef({ itemVisiblePercentThreshold: 70 }).current;
+  const onPostsViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
+    const primary = viewableItems.find(v => v.isViewable && v.item);
+    const item = primary?.item as { id?: string; feed_item_id?: string } | undefined;
+    setActivePostKey(item ? (item.feed_item_id ?? item.id ?? null) : null);
+  }).current;
 
   feedModeRef.current = feedMode;
   followedRef.current = followedShopIds;
@@ -493,20 +184,31 @@ export default function FeedScreen() {
     try {
       const p = reset ? 0 : pageRef.current;
       const mode = feedModeRef.current;
-      let data: any[] = [];
+      let rows: any[] = [];
 
       if (mode === 'following' && isBuyer) {
-        data = await getFollowingFeed(profile.id, p, followedRef.current);
+        rows = await getFollowingFeed(profile.id, p, followedRef.current);
+      } else if (reset) {
+        const result = await loadHomeFeed(profile, {
+          page: p,
+          mode,
+          followedShopIds: followedRef.current,
+        });
+        rows = result.posts;
+        setIsRegionalFallback(result.isRegionalFallback);
+        effectiveRadiusRef.current = result.effectiveRadiusKm;
+      } else if (profile.lat != null && profile.lng != null) {
+        rows = await getFeed(
+          profile.lat,
+          profile.lng,
+          effectiveRadiusRef.current,
+          p,
+          profile.id,
+        );
       } else {
-        // If we don't have lat/lng yet, do not query using hardcoded defaults
-        // (it will return unrelated/stale posts).
-        if (profile.lat == null || profile.lng == null) {
-          data = await feedFromPostsTable(p, profile.id);
-        } else {
-          data = await getFeed(profile.lat, profile.lng, profile.radius_km ?? 5, p, profile.id);
-        }
+        const result = await loadHomeFeed(profile, { page: p, mode });
+        rows = result.posts;
       }
-      const rows = Array.isArray(data) ? data : [];
 
       setPosts(prev => (reset ? rows : [...prev, ...rows]));
       setHasMore(rows.length >= 10);
@@ -518,7 +220,6 @@ export default function FeedScreen() {
     } finally {
       loadingRef.current = false;
       setLoading(false);
-      setRefreshing(false);
       setLoadingMore(false);
     }
   }, [profile, isBuyer, hasMore]);
@@ -530,25 +231,88 @@ export default function FeedScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id, profile?.lat, profile?.lng, profile?.radius_km, feedMode]);
 
+  const loadSparks = useCallback(async () => {
+    if (!profile) return;
+    const shopFilter = isBuyer && followedShopIds.length ? followedShopIds : undefined;
+    const rows = await getUnifiedSparksFeed(profile.id, 30, 0, shopFilter);
+    setSparks(rows as SparkItem[]);
+  }, [profile, isBuyer, followedShopIds]);
+
   // Social extras once (non-blocking)
   useEffect(() => {
     if (!profile || socialLoadedRef.current) return;
     socialLoadedRef.current = true;
+    setStoriesHydrating(true);
     let cancelled = false;
     (async () => {
-      const [st, rl] = await Promise.all([
+      const [st, sparkRows] = await Promise.all([
         getStories(profile.id),
-        getReels(isBuyer && followedShopIds.length ? followedShopIds : undefined),
+        getUnifiedSparksFeed(
+          profile.id,
+          30,
+          0,
+          isBuyer && followedShopIds.length ? followedShopIds : undefined,
+        ),
       ]);
       if (cancelled) return;
       setStories(st);
-      setReels(rl);
+      setSparks(sparkRows as SparkItem[]);
+      setStoriesHydrating(false);
       loadNotifications(profile.id).catch(() => {});
       if (isBuyer) loadCart(profile.id).catch(() => {});
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
+
+  useEffect(() => {
+    if (!posts.length) return;
+    usePostInteractionsStore.getState().hydrateFromPosts(posts);
+  }, [posts]);
+
+  const loadSellerDashboard = useCallback(async () => {
+    if (!profile || !isMerchantSeller) return;
+    setSellerMetricsLoading(true);
+    try {
+      const [shop, metrics] = await Promise.all([
+        getShopByOwner(profile.id),
+        getSellerDashboardMetrics(profile.id),
+      ]);
+      setSellerShopId(shop?.id ?? null);
+      setSellerMetrics(metrics);
+      setHasShop(!!shop);
+    } catch {
+      setSellerMetrics(null);
+    } finally {
+      setSellerMetricsLoading(false);
+    }
+  }, [profile, isMerchantSeller]);
+
+  const loadServiceProDashboard = useCallback(async () => {
+    if (!profile || !isServiceProvider) return;
+    setServiceProStatsLoading(true);
+    try {
+      const stats = await getServiceProDashboardStats(profile.id);
+      setServiceProStats(stats);
+      setProAvailable(stats.is_available);
+    } catch {
+      setServiceProStats(null);
+    } finally {
+      setServiceProStatsLoading(false);
+    }
+  }, [profile, isServiceProvider]);
+
+  const handleToggleProAvailability = useCallback(async (next: boolean) => {
+    if (!profile) return;
+    setProAvailable(next);
+    try {
+      await setServiceProviderAvailability(profile.id, next);
+      setServiceProStats(prev => (prev ? { ...prev, is_available: next } : prev));
+    } catch {
+      setProAvailable(!next);
+      Alert.alert('Availability', 'Could not update your status. Please try again.');
+    }
+  }, [profile]);
 
   // When coming from the bottom-center "+" tab, open the seller create menu.
   useEffect(() => {
@@ -573,20 +337,14 @@ export default function FeedScreen() {
 
   // For sellers, detect if they already have a shop so we can highlight the "New shop" option once.
   useEffect(() => {
-    if (!profile || !isSeller) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const shop = await getShopByOwner(profile.id);
-        if (!cancelled) setHasShop(!!shop);
-      } catch {
-        if (!cancelled) setHasShop(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [profile?.id, isSeller]);
+    if (!profile || !isMerchantSeller) return;
+    void loadSellerDashboard();
+  }, [profile?.id, isMerchantSeller, loadSellerDashboard]);
+
+  useEffect(() => {
+    if (!profile || !isServiceProvider) return;
+    void loadServiceProDashboard();
+  }, [profile?.id, isServiceProvider, loadServiceProDashboard]);
 
   // Auto-refresh the feed every 60 seconds so the home page stays fresh.
   useEffect(() => {
@@ -608,39 +366,65 @@ export default function FeedScreen() {
 
   // Search UI removed — feed posts are always shown as loaded.
 
-  const onRefresh = useCallback(() => {
+  const refreshFeed = useCallback(async () => {
     if (!profile) return;
-    setRefreshing(true);
     socialLoadedRef.current = false;
-    Promise.all([
-      load(true),
-      getStories(profile.id).then(setStories),
-      getReels(isBuyer && followedShopIds.length ? followedShopIds : undefined).then(setReels),
-      loadNotifications(profile.id).catch(() => {}),
-    ]).finally(() => setRefreshing(false));
-  }, [profile, load, isBuyer, followedShopIds.length, loadNotifications]);
+    setStoriesHydrating(true);
+    setInteractionsRefreshing(true);
+    try {
+      await Promise.all([
+        load(true),
+        getStories(profile.id).then(setStories),
+        loadSparks(),
+        loadNotifications(profile.id).catch(() => {}),
+        isMerchantSeller ? loadSellerDashboard() : Promise.resolve(),
+        isServiceProvider ? loadServiceProDashboard() : Promise.resolve(),
+      ]);
+    } finally {
+      setInteractionsRefreshing(false);
+      setStoriesHydrating(false);
+    }
+  }, [profile, load, loadSparks, loadNotifications, isMerchantSeller, loadSellerDashboard, isServiceProvider, loadServiceProDashboard, setInteractionsRefreshing]);
+
+  const { refreshControl: pullRefreshControl, scrollHandlers, refreshing, onRefresh } = useScreenRefresh(refreshFeed);
 
   const onEndReached = () => {
     if (loading || loadingMore || !hasMore || loadingRef.current) return;
     load(false);
   };
 
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    let last = 0;
-    const onWheel = (event: WheelEvent) => {
-      const top = (document.scrollingElement?.scrollTop ?? window.scrollY) <= 8;
-      if (!top || event.deltaY >= -80) return;
-      const now = Date.now();
-      if (now - last < 1600 || refreshing) return;
-      last = now;
-      onRefresh();
-    };
-    window.addEventListener('wheel', onWheel, { passive: true });
-    return () => window.removeEventListener('wheel', onWheel);
-  }, [onRefresh, refreshing]);
-
   const filteredPosts = posts;
+
+  const isOwnShopPost = useCallback((post: { shop_id?: string }) => (
+    !!isMerchantSeller && !!sellerShopId && post.shop_id === sellerShopId
+  ), [isMerchantSeller, sellerShopId]);
+
+  const handlePostDeleted = useCallback((postId: string) => {
+    setPosts(prev => prev.filter(p => p.id !== postId));
+  }, []);
+
+  const handleFlashDealSource = async (choice: MediaSourceChoice) => {
+    setShowFlashDealSource(false);
+    if (choice === 'gallery') {
+      await pickMedia(true);
+      setShowStoryComposer(true);
+      return;
+    }
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Camera access needed', 'Allow camera access to capture a Flash Deal.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      quality: 0.8,
+      allowsEditing: true,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    setStoryMedia({ uri: asset.uri, type: (asset.type === 'video' ? 'video' : 'image') as 'image' | 'video' });
+    setShowStoryComposer(true);
+  };
 
   const pickMedia = async (forStory: boolean) => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -652,14 +436,13 @@ export default function FeedScreen() {
     const asset = result.assets[0];
     const media = { uri: asset.uri, type: (asset.type === 'video' ? 'video' : 'image') as 'image' | 'video' };
     if (forStory) setStoryMedia(media);
-    else setReelMedia(media);
   };
 
   const resolveMyShop = async () => {
     if (!profile) return null;
     const shop = await getShopByOwner(profile.id);
     if (!shop) {
-      Alert.alert('Create your shop first', 'You need a shop before posting stories or reels.', [
+      Alert.alert('Create your shop first', 'You need a shop before posting stories or Sparks.', [
         { text: 'Create Shop', onPress: () => router.push('/seller/shop' as any) },
         { text: 'Cancel', style: 'cancel' },
       ]);
@@ -671,9 +454,16 @@ export default function FeedScreen() {
   const uploadMediaUrl = async (uri: string, type: 'image' | 'video', folder: string) => {
     const response = await fetch(uri);
     const blob = await response.blob();
-    const ext = type === 'video' ? 'mp4' : 'jpg';
+    const mime = blob.type || (type === 'video' ? 'video/mp4' : 'image/jpeg');
+    const ext = mime.includes('webm')
+      ? 'webm'
+      : mime.includes('png')
+        ? 'png'
+        : type === 'video'
+          ? 'mp4'
+          : 'jpg';
     const path = `${folder}/${profile!.id}/${Date.now()}.${ext}`;
-    return uploadImage('cityconnect', path, blob, type === 'video' ? 'video/mp4' : 'image/jpeg');
+    return uploadImage('cityconnect', path, blob, mime);
   };
 
   const submitStory = async () => {
@@ -713,29 +503,45 @@ export default function FeedScreen() {
     }
   };
 
-  const submitReel = async () => {
-    if (!reelMedia) { Alert.alert('Pick a short video or image for your reel'); return; }
+  const submitSpark = async (payload: {
+    media: { uri: string; type: 'image' | 'video' };
+    caption: string;
+    tags: string[];
+    location: string;
+    productId?: string | null;
+    audio_track_id?: string | null;
+    audio_title?: string | null;
+    audio_artist?: string | null;
+    audio_url?: string | null;
+  }) => {
     setPosting(true);
     try {
       const shop = await resolveMyShop();
       if (!shop) return;
-      const mediaUrl = await uploadMediaUrl(reelMedia.uri, reelMedia.type, 'reels');
-      const tags = reelTags.trim().split(/[\s,]+/).filter(Boolean).map(t => t.replace(/^#/, ''));
+      const mediaUrl = await uploadMediaUrl(payload.media.uri, payload.media.type, 'reels');
+      const captionParts = [payload.caption.trim()];
+      if (payload.location.trim()) captionParts.push(`📍 ${payload.location.trim()}`);
+      if (payload.audio_title?.trim()) {
+        captionParts.push(`🎵 ${payload.audio_title.trim()}${payload.audio_artist ? ` • ${payload.audio_artist.trim()}` : ''}`);
+      }
       const created = await createReel({
         shop_id: shop.id,
         author_id: profile!.id,
         media_url: mediaUrl,
-        caption: reelDraft.trim(),
-        tags,
+        caption: captionParts.filter(Boolean).join('\n'),
+        tags: payload.tags,
+        product_id: payload.productId ?? null,
+        audio_track_id: payload.audio_track_id ?? null,
+        audio_title: payload.audio_title ?? null,
+        audio_artist: payload.audio_artist ?? null,
+        audio_url: payload.audio_url ?? null,
       });
-      setReels(prev => [{ ...created, shop_name: shop.name }, ...prev]);
-      setReelDraft('');
-      setReelTags('');
-      setReelMedia(null);
-      setShowReelComposer(false);
-      addNotification('Reel published.');
+      setSparks(prev => [{ ...created, shop_name: shop.name, shop_logo: shop.logo_url }, ...prev]);
+      setShowSparkComposer(false);
+      setFeedView('sparks');
+      addNotification('Spark published.');
     } catch (e: any) {
-      Alert.alert('Could not post reel', e.message || 'Try again after running the social migration SQL.');
+      Alert.alert('Could not post Spark', e.message || 'Try again after running the social migration SQL.');
     } finally {
       setPosting(false);
     }
@@ -796,14 +602,6 @@ export default function FeedScreen() {
     );
   }
 
-  if (loading && posts.length === 0) {
-    return (
-      <View style={ff.loader}>
-        <ActivityIndicator color={Colors.orange} size="large" />
-      </View>
-    );
-  }
-
   return (
     <View style={ff.root}>
       <SafeAreaView edges={['top']} style={{ backgroundColor: Colors.bg }}>
@@ -818,7 +616,9 @@ export default function FeedScreen() {
 
           <View style={ff.headerCenter}>
             <Text style={ff.brand}>Vedastya</Text>
-            <Text style={ff.location}>📍 {profile?.city} · {profile?.radius_km} km{isBuyer ? ' · Buyer' : ' · Seller'}</Text>
+            <Text style={ff.location}>
+              📍 {profile?.city} · {profile?.radius_km} km · {roleBadge}
+            </Text>
           </View>
 
           <View style={ff.headerRight}>
@@ -830,9 +630,11 @@ export default function FeedScreen() {
         </View>
       </SafeAreaView>
 
+      {isMerchantSeller ? <MarketTicker city={profile?.city} /> : null}
+
       {/* Search UI removed */}
 
-      {isBuyer && (
+      {isBuyer && feedView === 'posts' && (
         <View style={ff.feedModeRow}>
           <TouchableOpacity onPress={() => setFeedMode('nearby')} style={[ff.feedModeChip, feedMode === 'nearby' && ff.feedModeChipActive]}>
             <Text style={[ff.feedModeText, feedMode === 'nearby' && ff.feedModeTextActive]}>Nearby</Text>
@@ -843,33 +645,61 @@ export default function FeedScreen() {
         </View>
       )}
 
-      <FlatList
+      <View style={ff.contentTabs}>
+        <TouchableOpacity
+          style={[ff.contentTab, feedView === 'posts' && ff.contentTabActive]}
+          onPress={() => setFeedView('posts')}
+          activeOpacity={0.85}
+        >
+          <Text style={[ff.contentTabText, feedView === 'posts' && ff.contentTabTextActive]}>Posts</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[ff.contentTab, feedView === 'sparks' && ff.contentTabActive]}
+          onPress={() => setFeedView('sparks')}
+          activeOpacity={0.85}
+        >
+          <Text style={[ff.contentTabText, feedView === 'sparks' && ff.contentTabTextActive]}>Sparks</Text>
+        </TouchableOpacity>
+      </View>
+
+      {feedView === 'sparks' ? (
+        <SparksFeed sparks={sparks} />
+      ) : loading && posts.length === 0 ? (
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: 80, paddingTop: 4 }}
+          {...scrollHandlers}
+          refreshControl={pullRefreshControl}
+        >
+          <FeedHydrationSkeleton />
+        </ScrollView>
+      ) : (
+      <FlashList
+        style={{ flex: 1 }}
         data={filteredPosts}
-        extraData={filteredPosts}
-        keyExtractor={item => item.id}
+        extraData={`${filteredPosts.length}-${postCacheVersion}-${sellerShopId}-${activePostKey}`}
+        keyExtractor={item => item.feed_item_id ?? item.id}
+        numColumns={isMerchantSeller ? 2 : 1}
+        estimatedItemSize={isMerchantSeller ? 300 : 520}
+        drawDistance={WINDOW_HEIGHT * 2}
+        onViewableItemsChanged={onPostsViewableItemsChanged}
+        viewabilityConfig={postsViewabilityConfig}
+        {...scrollHandlers}
         renderItem={({ item }) => (
           <PostCard
             post={item}
             userId={profile!.id}
             isBuyer={!!isBuyer}
+            isSellerOwner={isOwnShopPost(item)}
+            layout={isMerchantSeller ? 'masonry' : 'feed'}
+            isMediaActive={activePostKey === (item.feed_item_id ?? item.id)}
             onAddToCart={handleAddToCart}
+            onDeleted={handlePostDeleted}
           />
         )}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={Colors.orange}
-            colors={[Colors.orange]}
-            progressBackgroundColor={Colors.card}
-          />
-        }
+        refreshControl={pullRefreshControl}
         onEndReached={onEndReached}
         onEndReachedThreshold={0.4}
-        removeClippedSubviews
-        initialNumToRender={4}
-        maxToRenderPerBatch={4}
-        windowSize={7}
         ListFooterComponent={loadingMore ? <ActivityIndicator color={Colors.orange} style={{ marginVertical: 16 }} /> : null}
         ListHeaderComponent={
           <View>
@@ -878,7 +708,38 @@ export default function FeedScreen() {
                 <Text style={ff.webRefreshText}>{refreshing ? 'Refreshing…' : '↓ Tap to refresh feed'}</Text>
               </TouchableOpacity>
             )}
+
+            {isMerchantSeller ? (
+              <SellerHeaderHero
+                metrics={sellerMetrics}
+                loading={sellerMetricsLoading}
+                unreadEnquiries={sellerMetrics?.new_leads ?? 0}
+                onFlashDeal={() => setShowFlashDealSource(true)}
+                onAddProduct={() => router.push('/seller/upload' as any)}
+                onPostSpark={() => setShowSparkComposer(true)}
+                onViewEnquiries={() => router.push('/seller/enquiries' as any)}
+              />
+            ) : null}
+
+            {isServiceProvider ? (
+              <ServiceProHeaderHero
+                stats={serviceProStats}
+                loading={serviceProStatsLoading}
+                isAvailable={proAvailable}
+                onToggleAvailability={value => void handleToggleProAvailability(value)}
+                onListService={() => router.push('/(tabs)/services' as any)}
+              />
+            ) : null}
+
+            {isRegionalFallback ? (
+              <FeedRegionalBanner onAdjustRadius={() => router.push('/(tabs)/profile' as any)} />
+            ) : null}
+
             <View style={ff.stories}>
+              {storiesHydrating ? (
+                <FeedStoriesSkeleton />
+              ) : (
+                <>
               {isSeller && (
                 <TouchableOpacity style={sf.story} onPress={() => setShowStoryComposer(true)}>
                   <View style={[sf.storyRing, { borderStyle: 'dashed' }]}>
@@ -902,18 +763,15 @@ export default function FeedScreen() {
               {!isSeller && stories.length === 0 && (
                 <Text style={ff.storyHint}>Follow shops to see their stories here</Text>
               )}
+                </>
+              )}
             </View>
 
-            {reels.length > 0 && (
-              <View style={ff.reelStrip}>
-                {reels.slice(0, 4).map(reel => (
-                  <View key={reel.id} style={ff.reelCard}>
-                    <Text style={ff.reelBadge}>REEL</Text>
-                    <Text style={ff.reelTitle} numberOfLines={1}>{reel.shop_name ?? 'Shop'}</Text>
-                    <Text style={ff.reelText} numberOfLines={2}>{reel.caption}</Text>
-                  </View>
-                ))}
-              </View>
+            {sparks.length > 0 && feedView === 'posts' && (
+              <TouchableOpacity style={ff.reelsPromo} onPress={() => setFeedView('sparks')} activeOpacity={0.9}>
+                <Text style={ff.reelsPromoBadge}>SPARKS</Text>
+                <Text style={ff.reelsPromoText}>Watch {sparks.length} short video{sparks.length === 1 ? '' : 's'} →</Text>
+              </TouchableOpacity>
             )}
 
             {notifications.length > 0 && isBuyer && (
@@ -934,7 +792,17 @@ export default function FeedScreen() {
           </View>
         }
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 80 }}
+        contentContainerStyle={{ paddingBottom: 80, paddingTop: 4 }}
+      />
+      )}
+
+      <MediaSourceSheet
+        visible={showFlashDealSource}
+        title="Create Flash Deal"
+        cameraLabel="Take Photo or Video"
+        galleryLabel="Choose from Gallery"
+        onClose={() => setShowFlashDealSource(false)}
+        onSelect={choice => void handleFlashDealSource(choice)}
       />
 
       <Modal transparent visible={showNotifications} animationType="fade" onRequestClose={() => setShowNotifications(false)}>
@@ -1009,13 +877,13 @@ export default function FeedScreen() {
               style={ff.createRow}
               onPress={() => {
                 setShowCreateMenu(false);
-                setShowReelComposer(true);
+                setShowSparkComposer(true);
               }}
             >
               <Text style={ff.createIcon}>🎬</Text>
               <View style={ff.createTextWrap}>
-                <Text style={ff.createTitle}>Quick clip</Text>
-                <Text style={ff.createSub}>Short vertical video from your shop.</Text>
+                <Text style={ff.createTitle}>Spark</Text>
+                <Text style={ff.createSub}>Short vertical video for the Sparks tab.</Text>
               </View>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1069,35 +937,14 @@ export default function FeedScreen() {
         </View>
       </Modal>
 
-      <Modal transparent visible={showReelComposer} animationType="slide" onRequestClose={() => setShowReelComposer(false)}>
-        <View style={ff.modalBackdrop}>
-          <View style={ff.modalSheet}>
-            <View style={ff.modalHandle} />
-            <Text style={ff.modalTitle}>Create Reel</Text>
-            <TouchableOpacity style={ff.mediaPick} onPress={() => pickMedia(false)}>
-              <Text style={ff.mediaPickText}>{reelMedia ? '✓ Media selected — tap to change' : '🎬 Pick short video or image'}</Text>
-            </TouchableOpacity>
-            <TextInput
-              value={reelDraft}
-              onChangeText={setReelDraft}
-              multiline
-              placeholder="Caption"
-              placeholderTextColor={Colors.dim}
-              style={ff.modalInput}
-            />
-            <TextInput
-              value={reelTags}
-              onChangeText={setReelTags}
-              placeholder="Tags: fashion sale local"
-              placeholderTextColor={Colors.dim}
-              style={[ff.modalInput, { minHeight: 44 }]}
-            />
-            <TouchableOpacity onPress={submitReel} style={ff.primaryBtn} disabled={posting}>
-              {posting ? <ActivityIndicator color="#fff" /> : <Text style={ff.primaryBtnText}>Publish Reel</Text>}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <SparkComposer
+        visible={showSparkComposer}
+        posting={posting}
+        defaultLocation={profile?.city ?? ''}
+        shopId={sellerShopId}
+        onClose={() => setShowSparkComposer(false)}
+        onPublish={submitSpark}
+      />
 
       {/* Text-only shop update */}
       <Modal transparent visible={showTextPostComposer} animationType="slide" onRequestClose={() => setShowTextPostComposer(false)}>
@@ -1186,14 +1033,6 @@ export default function FeedScreen() {
   );
 }
 
-function timeAgo(ts: string) {
-  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
-
 const ff = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bg },
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bg },
@@ -1223,13 +1062,55 @@ const ff = StyleSheet.create({
   feedModeChipActive: { backgroundColor: Colors.orange, borderColor: Colors.orange },
   feedModeText: { color: Colors.sub, fontSize: 12, fontWeight: '700' },
   feedModeTextActive: { color: Colors.white },
+  contentTabs: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  contentTab: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  contentTabActive: {
+    backgroundColor: Colors.card,
+    ...Platform.select({
+      web: { boxShadow: '0 2px 8px rgba(0,0,0,0.25)' } as object,
+      default: { elevation: 2 },
+    }),
+  },
+  contentTabText: {
+    fontSize: 13,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '700',
+    color: Colors.dim,
+    letterSpacing: 0.2,
+  },
+  contentTabTextActive: { color: Colors.orange },
   stories: { flexDirection: 'row', gap: 14, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.border, alignItems: 'center' },
   storyHint: { color: Colors.dim, fontSize: 12, flex: 1 },
-  reelStrip: { flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
-  reelCard: { width: 140, backgroundColor: Colors.card, borderRadius: 14, padding: 12, gap: 4 },
-  reelBadge: { color: Colors.orange, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  reelTitle: { color: Colors.text, fontWeight: '700', fontSize: 12 },
-  reelText: { color: Colors.sub, fontSize: 11, lineHeight: 16 },
+  reelsPromo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+  },
+  reelsPromoBadge: { color: Colors.orange, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  reelsPromoText: { color: Colors.text, fontSize: 13, fontWeight: '600', flex: 1 },
   noticeBar: { marginHorizontal: 16, marginTop: 10, borderRadius: 12, backgroundColor: Colors.orange + '15', paddingHorizontal: 12, paddingVertical: 10 },
   noticeText: { color: Colors.orange, fontWeight: '600', fontSize: 12 },
   emptyState: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 24 },
@@ -1311,66 +1192,4 @@ const sf = StyleSheet.create({
   storyEmoji: { fontSize: 26 },
   storyPlusIcon: { fontSize: 32, color: Colors.text, fontWeight: '300' },
   storyName: { fontSize: 10, color: Colors.sub, textAlign: 'center' },
-});
-
-const pf = StyleSheet.create({
-  card: { borderBottomWidth: 1, borderBottomColor: Colors.border },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
-  shopIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: Colors.orange, overflow: 'hidden' },
-  shopIconImage: { width: '100%', height: '100%' },
-  shopEmoji: { fontSize: 22 },
-  shopName: { fontSize: 15, fontWeight: '700', color: Colors.text },
-  shopMeta: { fontSize: 11, color: Colors.sub, marginTop: 1 },
-  menuBtn: { padding: 4, marginLeft: 4 },
-  menuIcon: { fontSize: 20, color: Colors.text, fontWeight: '700' },
-  adBadge: { backgroundColor: Colors.blue + '22', borderRadius: 20, paddingHorizontal: 7, paddingVertical: 2 },
-  adText: { fontSize: 9, color: Colors.blue, fontWeight: '700' },
-  // Instagram-like portrait feed ratio (approx 4:5)
-  media: { width: W, aspectRatio: 4 / 5, backgroundColor: Colors.card, position: 'relative' },
-  image: { width: '100%', height: '100%' },
-  imagePlaceholder: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
-  videoBadge: { position: 'absolute', top: 12, right: 12, backgroundColor: '#000C', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
-  videoBadgeText: { color: Colors.white, fontWeight: '700' },
-  actions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
-  actionIcon: { fontSize: 26 },
-  actionIconBright: { fontSize: 28, color: Colors.text, fontWeight: '600' },
-  actionIconActive: { color: Colors.orange },
-  menuIconSmall: { fontSize: 24, color: Colors.text, fontWeight: '700' },
-  cartChip: { backgroundColor: Colors.orange + '22', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: Colors.orange + '55' },
-  cartChipText: { color: Colors.orange, fontWeight: '700', fontSize: 12 },
-  caption: { paddingHorizontal: 16, paddingBottom: 12, gap: 3 },
-  statsRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
-  likesText: { fontSize: 13, fontWeight: '700', color: Colors.text },
-  repostsText: { fontSize: 13, fontWeight: '700', color: Colors.sub },
-  captionText: { fontSize: 13, color: Colors.text, lineHeight: 18 },
-  shopNameInline: { fontWeight: '700' },
-  viewComments: { fontSize: 12, color: Colors.dim, marginTop: 2 },
-  commentsSection: { paddingHorizontal: 12, paddingBottom: 12, gap: 8 },
-  commentRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
-  commentAvatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center' },
-  commentBubble: { flex: 1, backgroundColor: Colors.card, borderRadius: 10, padding: 8 },
-  commentUser: { fontSize: 12, fontWeight: '700', color: Colors.text, marginBottom: 2 },
-  commentText: { fontSize: 13, color: Colors.text },
-  commentInput: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
-  commentField: { flex: 1, backgroundColor: Colors.card, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, color: Colors.text, fontSize: 14 },
-  commentPost: { color: Colors.orange, fontWeight: '700', fontSize: 14 },
-  textCard: {
-    flex: 1,
-    width: W,
-    aspectRatio: 4 / 5,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-  },
-  textCardText: { textAlign: 'center' },
-  menuModalBackdrop: { flex: 1, backgroundColor: '#000A', justifyContent: 'flex-end' },
-  menuModalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingBottom: 20 },
-  menuModalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border2, alignSelf: 'center', marginTop: 8, marginBottom: 8 },
-  menuModalTitle: { fontSize: 14, fontWeight: '700', color: Colors.text, textAlign: 'center', marginBottom: 12, paddingTop: 8 },
-  menuOption: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 14 },
-  menuOptionIcon: { fontSize: 20 },
-  menuOptionText: { fontSize: 15, color: Colors.text, fontWeight: '500' },
-  menuDivider: { height: 1, backgroundColor: Colors.border2, marginVertical: 8 },
-  menuOptionDanger: {},
-  menuOptionTextDanger: { color: Colors.red },
 });

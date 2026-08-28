@@ -7,6 +7,7 @@ import type { CartItem } from '../types';
 interface CartStore {
   items: CartItem[];
   isLoading: boolean;
+  version: number;
   loadCart: (userId: string) => Promise<void>;
   addItem: (userId: string, productId: string, shopId: string, quantity?: number) => Promise<void>;
   setQuantity: (itemId: string, quantity: number) => Promise<void>;
@@ -19,6 +20,7 @@ interface CartStore {
 export const useCartStore = create<CartStore>((set, get) => ({
   items: [],
   isLoading: false,
+  version: 0,
 
   loadCart: async (userId) => {
     set({ isLoading: true });
@@ -34,7 +36,7 @@ export const useCartStore = create<CartStore>((set, get) => ({
     const item = await addToCart(userId, productId, shopId, quantity);
     set(state => {
       const others = state.items.filter(i => i.product_id !== productId);
-      return { items: [item, ...others] };
+      return { items: [item, ...others], version: state.version + 1 };
     });
   },
 

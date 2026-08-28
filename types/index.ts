@@ -39,9 +39,14 @@ export interface Shop {
   instagram: string | null;
   open_time: string;
   close_time: string;
+  operating_hours?: ShopOperatingHours | null;
   is_open: boolean;
   is_verified: boolean;
   is_active: boolean;
+  presence_status?: ShopPresenceStatus;
+  status_message?: string | null;
+  last_active_at?: string;
+  accepts_messages?: boolean;
   avg_rating: number;
   total_reviews: number;
   total_followers: number;
@@ -50,6 +55,70 @@ export interface Shop {
   updated_at: string;
   // computed
   distance_km?: number;
+}
+
+export type ShopPresenceStatus = 'open' | 'closed' | 'busy' | 'custom';
+
+export interface ShopDayHours {
+  enabled: boolean;
+  open: string;
+  close: string;
+}
+
+export interface ShopOperatingHours {
+  schedule: Record<string, ShopDayHours>;
+  closedToday?: boolean;
+  is24_7?: boolean;
+}
+
+export interface ShopConversation {
+  id: string;
+  buyer_id: string;
+  shop_id: string;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShopMessage {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  body: string;
+  created_at: string;
+}
+
+export type ShopEnquiryType = 'chat' | 'quote' | 'callback';
+export type ShopEnquiryStatus = 'new' | 'contacted' | 'converted' | 'closed';
+
+export interface ShopEnquiry {
+  id: string;
+  shop_id: string;
+  buyer_id: string;
+  product_id: string | null;
+  type: ShopEnquiryType;
+  message: string;
+  status: ShopEnquiryStatus;
+  contacted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  // joined
+  buyer?: Pick<Profile, 'id' | 'name' | 'avatar_url' | 'city' | 'lat' | 'lng' | 'phone'>;
+  product?: Pick<Product, 'id' | 'title' | 'price' | 'discount_pct' | 'discounted_price' | 'images'>;
+  distance_km?: number;
+}
+
+export interface SellerEnquiryStats {
+  total_leads: number;
+  new_leads: number;
+  conversion_rate: number;
+  avg_response_minutes: number;
+}
+
+export interface SellerDashboardMetrics {
+  daily_views: number;
+  product_saves: number;
+  new_leads: number;
 }
 
 export type ShopCategory =
@@ -144,6 +213,17 @@ export interface Post {
   is_liked?: boolean;
   is_saved?: boolean;
   is_reposted?: boolean;
+  /** Stable list key when post appears as a repost feed entry */
+  feed_item_id?: string;
+  /** Attribution for community/profile repost cards */
+  reposted_by_name?: string | null;
+  reposted_by_id?: string | null;
+  reposted_at?: string | null;
+  quote_caption?: string | null;
+  is_repost_entry?: boolean;
+  /** True when this repost entry originated from a native Spark (reel) */
+  is_spark_repost?: boolean;
+  spark_id?: string | null;
 }
 
 export interface SellerCompetitiveProfile {
@@ -169,6 +249,7 @@ export interface ServiceProvider {
   profile_id: string;
   business_name: string;
   category: ServiceCategory;
+  subcategory?: string | null;
   description: string;
   phone: string;
   whatsapp: string | null;
@@ -182,10 +263,25 @@ export interface ServiceProvider {
   total_reviews: number;
   is_available: boolean;
   is_verified: boolean;
+  presence_status?: PresenceStatus;
+  custom_status?: string | null;
+  last_active_at?: string;
   created_at: string;
   // computed
   distance_km?: number;
 }
+
+export type PresenceStatus = 'online' | 'offline' | 'away' | 'custom';
+
+export type OtherSubcategory =
+  | 'mistri'
+  | 'majdoor'
+  | 'welder'
+  | 'mechanic'
+  | 'appliance_repair'
+  | 'masonry'
+  | 'glasswork'
+  | 'fabricator';
 
 export type ServiceCategory =
   | 'plumber'
@@ -198,6 +294,23 @@ export type ServiceCategory =
   | 'carpenter'
   | 'pest_control'
   | 'other';
+
+export interface ProConversation {
+  id: string;
+  buyer_id: string;
+  provider_profile_id: string;
+  service_provider_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProMessage {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  body: string;
+  created_at: string;
+}
 
 export interface Review {
   id: string;
@@ -253,6 +366,25 @@ export interface Notification {
 
 export type CityNewsCategory = 'event' | 'rates' | 'weather' | 'alerts' | 'general';
 
+export type DailyWidgetKind = 'weather' | 'fx' | 'gold' | 'silver' | 'mandi' | 'index' | 'fuel';
+
+export interface DailyWidgetMeta {
+  kind: DailyWidgetKind;
+  label?: string;
+  value?: string;
+  changePct?: number | null;
+  unit?: string;
+  temp?: number;
+  condition?: string;
+  humidity?: number;
+  wind?: number;
+  /** Multi-row widgets (mandi board, gold 24K/22K, petrol/diesel) */
+  items?: Array<{ name: string; price: string; changePct?: number | null }>;
+  live?: boolean;
+  /** weekly | daily cadence for rate boards */
+  cadence?: 'daily' | 'weekly';
+}
+
 export interface CityNews {
   id: string;
   city: string;
@@ -269,6 +401,12 @@ export interface CityNews {
   updated_at: string;
   author?: Profile | null;
   is_liked?: boolean;
+  /** Explore mosaic: image or video Spark tile */
+  media_type?: 'image' | 'video' | null;
+  /** Structured data for rates / weather widgets */
+  widget?: DailyWidgetMeta | null;
+  /** Prefer tall 1×2 tile in the Explore mosaic */
+  featured?: boolean;
 }
 
 export interface CityNewsComment {
@@ -305,6 +443,29 @@ export interface Reel {
   created_at: string;
   shop_name?: string;
   shop_logo?: string | null;
+  product_id?: string | null;
+  product?: Pick<Product, 'id' | 'title' | 'price' | 'discounted_price' | 'images'> | null;
+  audio_track_id?: string | null;
+  audio_title?: string | null;
+  audio_artist?: string | null;
+  audio_url?: string | null;
+  /** Hydrated for the current viewer */
+  is_liked?: boolean;
+  is_reposted?: boolean;
+  is_following?: boolean;
+  total_reposts?: number;
+  source_type?: 'reel' | 'post';
+}
+
+export interface SparkComment {
+  id: string;
+  spark_id?: string;
+  post_id?: string;
+  user_id: string;
+  body: string;
+  text?: string;
+  created_at: string;
+  user?: Pick<Profile, 'id' | 'name' | 'avatar_url'>;
 }
 
 export interface CartItem {

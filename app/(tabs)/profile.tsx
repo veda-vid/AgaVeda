@@ -1,15 +1,22 @@
 // app/(tabs)/profile.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput, Image,
   Switch, Alert, ActivityIndicator, StyleSheet, Platform, Modal, FlatList, useWindowDimensions, Share,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
-import { updateProfile, uploadImage, getShopByOwner, getPostsByShop, updateShop, getSavedPosts, getRepostedPosts, getMySellerCompetitiveProfile } from '../../lib/api';
+import { useScreenRefresh } from '../../hooks/useScreenRefresh';
+import { updateProfile, uploadImage, getShopByOwner, getPostsByShop, updateShop, getSavedPosts, getUserReposts, getUserSparks, getMySellerCompetitiveProfile, getMySellerEnquiryStats } from '../../lib/api';
 import * as ImagePicker from 'expo-image-picker';
-import { Colors, CurrentThemeId, DEFAULT_SHOP_BIO, RADIUS_OPTIONS, SHOP_CATEGORIES, THEME_OPTIONS, THEME_STORAGE_KEY, type AppThemeId } from '../../constants/theme';
-import type { Post, SellerCompetitiveProfile, Shop } from '../../types';
+import { Colors, CurrentThemeId, DEFAULT_SHOP_BIO, Fonts, RADIUS_OPTIONS, SHOP_CATEGORIES, THEME_OPTIONS, THEME_STORAGE_KEY, type AppThemeId } from '../../constants/theme';
+import { DailyBoardsSection } from '../../components/daily/DailyBoardsSection';
+import type { Post, SellerCompetitiveProfile, SellerEnquiryStats, Shop } from '../../types';
+import { formatResponseTime } from '../../lib/enquiryUtils';
+import { isProfileVideoItem } from '../../lib/profileMedia';
+import { useProfileMediaStore } from '../../stores/profileMediaStore';
+import { ProfileGridThumb } from '../../components/profile/ProfileGridThumb';
+import { FeedVideo } from '../../components/feed/FeedVideo';
 
 function StatBox({ value, label, icon, hint }: { value: string; label: string; icon?: string; hint?: string }) {
   const [hovered, setHovered] = useState(false);
@@ -374,7 +381,10 @@ function isVideoPost(post: ProfilePostItem) {
 }
 
 function isRepostItem(post: ProfilePostItem) {
-  return !!post.is_ad || /^\s*(repost|shared)/i.test(post.caption || '');
+  return !!(post as any).is_repost_entry
+    || !!(post as any).reposted_by_name
+    || !!post.is_ad
+    || /^\s*(repost|shared)/i.test(post.caption || '');
 }
 
 function formatCompactCount(value?: number | null) {
@@ -406,11 +416,15 @@ export default function ProfileScreen() {
   const [profilePosts, setProfilePosts] = useState<ProfilePostItem[]>([]);
   const [savedPosts, setSavedPosts] = useState<ProfilePostItem[]>([]);
   const [repostedPosts, setRepostedPosts] = useState<ProfilePostItem[]>([]);
+  const [sparkVideos, setSparkVideos] = useState<ProfilePostItem[]>([]);
   const [competitiveProfile, setCompetitiveProfile] = useState<SellerCompetitiveProfile | null>(null);
+  const [enquiryStats, setEnquiryStats] = useState<SellerEnquiryStats | null>(null);
   const [postsLoading, setPostsLoading] = useState(false);
   const [savedLoading, setSavedLoading] = useState(false);
   const [repostedLoading, setRepostedLoading] = useState(false);
+  const [videosLoading, setVideosLoading] = useState(false);
   const [competitiveLoading, setCompetitiveLoading] = useState(false);
+  const [enquiryStatsLoading, setEnquiryStatsLoading] = useState(false);
   const [postOpen, setPostOpen] = useState(false);
   const [postViewerPosts, setPostViewerPosts] = useState<ProfilePostItem[]>([]);
   const [activePostIndex, setActivePostIndex] = useState(0);
@@ -425,6 +439,17 @@ export default function ProfileScreen() {
   const gridGap = isSeller ? 2 : 6;
   const gridHorizontalPad = isSeller ? 0 : 40;
   const gridItemWidth = (width - gridHorizontalPad - gridGap * (gridColumns - 1)) / gridColumns;
+  const repostsRevision = useProfileMediaStore(s => s.repostsRevision);
+  const sparksRevision = useProfileMediaStore(s => s.sparksRevision);
+  const refreshProfileFromServer = useAuthStore(s => s.refreshProfile);
+  const [profileRefreshKey, setProfileRefreshKey] = useState(0);
+
+  const refreshProfileScreen = useCallback(async () => {
+    await refreshProfileFromServer();
+    setProfileRefreshKey(k => k + 1);
+  }, [refreshProfileFromServer]);
+
+  const { refreshControl, scrollHandlers } = useScreenRefresh(refreshProfileScreen);
 
   useEffect(() => {
     if (!profile || !isSeller) return;
@@ -449,7 +474,7 @@ export default function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isSeller, profile?.id]);
+  }, [isSeller, profile?.id, profileRefreshKey]);
 
   useEffect(() => {
     if (viewMode !== 'profile') return;
@@ -486,7 +511,7 @@ export default function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [profile?.id, isSeller, profileTab, viewMode]);
+  }, [profile?.id, isSeller, profileTab, viewMode, profileRefreshKey]);
 
   useEffect(() => {
     if (viewMode !== 'profile') return;
@@ -506,7 +531,7 @@ export default function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [profile?.id, profileTab, viewMode]);
+  }, [profile?.id, profileTab, viewMode, profileRefreshKey]);
 
   useEffect(() => {
     if (viewMode !== 'profile') return;
@@ -515,7 +540,7 @@ export default function ProfileScreen() {
     (async () => {
       if (!cancelled) setRepostedLoading(true);
       try {
-        const posts = await getRepostedPosts(profile.id);
+        const posts = await getUserReposts(profile.id);
         if (!cancelled) setRepostedPosts(Array.isArray(posts) ? posts : []);
       } catch {
         if (!cancelled) setRepostedPosts([]);
@@ -526,7 +551,27 @@ export default function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [profile?.id, profileTab, viewMode]);
+  }, [profile?.id, profileTab, viewMode, profileRefreshKey, repostsRevision]);
+
+  useEffect(() => {
+    if (viewMode !== 'profile') return;
+    if (!profile || !isSeller) return;
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) setVideosLoading(true);
+      try {
+        const videos = await getUserSparks(profile.id);
+        if (!cancelled) setSparkVideos(Array.isArray(videos) ? videos : []);
+      } catch {
+        if (!cancelled) setSparkVideos([]);
+      } finally {
+        if (!cancelled) setVideosLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, isSeller, viewMode, profileRefreshKey, sparksRevision]);
 
   useEffect(() => {
     if (viewMode !== 'profile') return;
@@ -549,7 +594,30 @@ export default function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [profile?.id, isSeller, viewMode]);
+  }, [profile?.id, isSeller, viewMode, profileRefreshKey]);
+
+  useEffect(() => {
+    if (viewMode !== 'profile') return;
+    if (!profile || !isSeller) {
+      setEnquiryStats(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) setEnquiryStatsLoading(true);
+      try {
+        const next = await getMySellerEnquiryStats();
+        if (!cancelled) setEnquiryStats(next);
+      } catch {
+        if (!cancelled) setEnquiryStats(null);
+      } finally {
+        if (!cancelled) setEnquiryStatsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, isSeller, viewMode, profileRefreshKey]);
 
   useEffect(() => {
     if (!profile) return;
@@ -698,9 +766,8 @@ export default function ProfileScreen() {
   const roleLabel = profile.role === 'buyer' ? 'Buyer' : profile.role === 'seller' ? 'Seller' : 'Service Provider';
   const activeTheme = THEME_OPTIONS.find(option => option.id === CurrentThemeId) ?? THEME_OPTIONS[0];
   const taggedPosts = profilePosts.filter(post => hasCaptionTags(post.caption));
-  const videoPosts = profilePosts.filter(isVideoPost);
   const activeGridPosts = profileTab === 'videos'
-    ? videoPosts
+    ? sparkVideos
     : profileTab === 'reposts'
       ? repostedPosts
       : profileTab === 'tagged'
@@ -708,17 +775,23 @@ export default function ProfileScreen() {
         : profileTab === 'saved'
           ? savedPosts
           : profilePosts;
-  const isGridLoading = profileTab === 'saved' ? savedLoading : profileTab === 'reposts' ? repostedLoading : postsLoading;
+  const isGridLoading = profileTab === 'saved'
+    ? savedLoading
+    : profileTab === 'reposts'
+      ? repostedLoading
+      : profileTab === 'videos'
+        ? videosLoading
+        : postsLoading;
   const visibleProfilePosts = postOpen ? postViewerPosts.slice(activePostIndex) : [];
   const emptyState = profileTab === 'videos'
     ? {
         title: 'No videos yet',
-        text: 'Upload a reel or video post and it will appear in this grid.',
+        text: 'Upload a Spark or video post and it will appear in this grid.',
       }
     : profileTab === 'reposts'
       ? {
           title: 'No reposts yet',
-          text: 'Shared and promoted posts from your shop will show up here.',
+          text: 'Reposted Sparks and posts will show up here.',
         }
     : profileTab === 'tagged'
     ? {
@@ -734,6 +807,28 @@ export default function ProfileScreen() {
           title: 'No posts yet',
           text: 'Create your first post to start building your profile grid.',
         };
+
+  const newEnquiryCount = enquiryStats?.new_leads ?? 0;
+  const sellerLeadStats = [
+    {
+      value: enquiryStatsLoading ? '...' : String(enquiryStats?.total_leads ?? 0),
+      label: 'Total Leads',
+      hint: 'All buyer enquiries received for your shop.',
+      icon: '📥',
+    },
+    {
+      value: enquiryStatsLoading ? '...' : `${enquiryStats?.conversion_rate ?? 0}%`,
+      label: 'Conversion Rate',
+      hint: 'Share of enquiries marked as converted.',
+      icon: '📈',
+    },
+    {
+      value: enquiryStatsLoading ? '...' : formatResponseTime(enquiryStats?.avg_response_minutes ?? 0),
+      label: 'Avg. Response',
+      hint: 'Average time to first contact after a lead arrives.',
+      icon: '⏱️',
+    },
+  ] as const;
 
   const rankCategory = competitiveProfile?.category || sellerShop?.category || 'toys';
   const sellerLeaderboardStats = [
@@ -797,7 +892,12 @@ export default function ProfileScreen() {
 
   return (
     <View style={s.root}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 80 }}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 80 }}
+        refreshControl={refreshControl}
+        {...scrollHandlers}
+      >
         {viewMode === 'profile' ? (
           <>
             {isSeller ? (
@@ -809,7 +909,17 @@ export default function ProfileScreen() {
                 >
                   <Text style={s.postPlusIcon}>+</Text>
                 </TouchableOpacity>
-                <Text style={s.igUsername} numberOfLines={1}>{displayShopName}</Text>
+                <Text style={s.igBrandTitle} numberOfLines={1}>{shopHandle(displayShopName)}</Text>
+                <TouchableOpacity
+                  onPress={() => router.push('/seller/enquiries' as any)}
+                  style={s.enquiryHeaderBtn}
+                  activeOpacity={0.85}
+                >
+                  <Text style={s.enquiryHeaderBtnText}>
+                    📥{newEnquiryCount > 0 ? ` (${newEnquiryCount} New)` : ''}
+                  </Text>
+                  {newEnquiryCount > 0 ? <View style={s.enquiryHeaderDot} /> : null}
+                </TouchableOpacity>
                 <TouchableOpacity onPress={() => setViewMode('settings')} style={s.igIconBtn} activeOpacity={0.85}>
                   <Text style={s.igMenuIcon}>☰</Text>
                 </TouchableOpacity>
@@ -878,8 +988,30 @@ export default function ProfileScreen() {
                   </TouchableOpacity>
                 </View>
 
+                <TouchableOpacity
+                  onPress={() => router.push('/seller/enquiries' as any)}
+                  style={s.enquiryActionBtn}
+                  activeOpacity={0.85}
+                >
+                  <Text style={s.enquiryActionBtnText}>
+                    📥 Enquiries & Leads{newEnquiryCount > 0 ? ` (${newEnquiryCount} New)` : ''}
+                  </Text>
+                  {newEnquiryCount > 0 ? <View style={s.enquiryActionDot} /> : null}
+                </TouchableOpacity>
+
                 <View style={s.statsRow}>
                   {sellerLeaderboardStats.map(stat => (
+                    <StatBox
+                      key={stat.label}
+                      value={stat.value}
+                      label={stat.label}
+                      hint={(stat as any).hint}
+                      icon={stat.icon}
+                    />
+                  ))}
+                </View>
+                <View style={s.statsRow}>
+                  {sellerLeadStats.map(stat => (
                     <StatBox
                       key={stat.label}
                       value={stat.value}
@@ -994,6 +1126,9 @@ export default function ProfileScreen() {
             )}
 
             <View style={[s.gridWrap, { gap: gridGap }, isSeller && s.igGridWrap]}>
+              {profileTab === 'saved' && profile?.id ? (
+                <DailyBoardsSection userId={profile.id} />
+              ) : null}
               {isGridLoading ? (
                 <View style={s.gridState}>
                   <ActivityIndicator color={Colors.orange} />
@@ -1002,7 +1137,7 @@ export default function ProfileScreen() {
               ) : activeGridPosts.length > 0
                 ? activeGridPosts.map((post, idx) => (
                     <TouchableOpacity
-                      key={post.id ?? idx}
+                      key={post.feed_item_id ?? post.id ?? `grid-${idx}`}
                       activeOpacity={0.9}
                       style={[s.gridItem, { width: gridItemWidth }]}
                       onPress={() => {
@@ -1012,27 +1147,8 @@ export default function ProfileScreen() {
                       }}
                     >
                       <View style={[s.gridThumb, isSeller && s.igGridThumb]}>
-                        {post.media_urls?.length ? (
-                          <Image source={{ uri: post.media_urls[0] }} style={s.gridThumbImg} />
-                        ) : (() => {
-                          const textMeta = parseTextCardCaption(post.caption);
-                          if (!textMeta) return <Text style={s.gridEmoji}>📷</Text>;
-                          return (
-                            <View style={[s.textCardThumb, { backgroundColor: getTextBackground(textMeta.background) }]}>
-                              <Text
-                                style={[
-                                  s.textCardThumbText,
-                                  getTextFontStyle((textMeta as any).fontStyle ?? (textMeta as any).style ?? 'classic'),
-                                  { color: getTextColor(textMeta.textColor) },
-                                ]}
-                                numberOfLines={3}
-                              >
-                                {textMeta.text}
-                              </Text>
-                            </View>
-                          );
-                        })()}
-                        {isSeller && isVideoPost(post) ? (
+                        <ProfileGridThumb post={post} style={s.gridThumbImg} />
+                        {((isSeller || profileTab === 'reposts' || profileTab === 'videos') && isProfileVideoItem(post)) ? (
                           <View style={s.igTileBadge}><Text style={s.igTileBadgeText}>▶</Text></View>
                         ) : isSeller && (post.media_urls?.length ?? 0) > 1 ? (
                           <View style={s.igTileBadge}><Text style={s.igTileBadgeText}>⧉</Text></View>
@@ -1111,6 +1227,12 @@ export default function ProfileScreen() {
                 <Text style={s.sectionTitle}>Settings</Text>
                 {isSeller && (
                   <>
+                    <SettingRow
+                      icon="📥"
+                      label="Enquiries & Leads"
+                      value={newEnquiryCount > 0 ? `${newEnquiryCount} new` : 'Manage'}
+                      onPress={() => router.push('/seller/enquiries' as any)}
+                    />
                     <SettingRow icon="🏪" label="My Shop" value="Manage" onPress={() => router.push('/seller/shop' as any)} />
                     <SettingRow icon="🖼️" label="Shop Wall" value="Change" onPress={changeCover} />
                   </>
@@ -1201,14 +1323,24 @@ export default function ProfileScreen() {
 
           <FlatList
             data={visibleProfilePosts}
-            keyExtractor={(item, index) => item.id ?? `profile-post-${index}`}
+            keyExtractor={(item, index) => item.feed_item_id ?? item.id ?? `profile-post-${index}`}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={s.postViewerList}
             renderItem={({ item }) => {
               const textMeta = parseTextCardCaption(item.caption);
               const displayCaption = textMeta ? textMeta.text : item.caption;
+              const showRepostBadge = profileTab === 'reposts' || !!(item as any).is_repost_entry || !!(item as any).reposted_by_name;
+              const repostLabel = (item as any).reposted_by_name || profile.name || 'You';
               return (
                 <View style={s.viewerCard}>
+                  {showRepostBadge ? (
+                    <View style={s.viewerRepostBanner}>
+                      <Text style={s.viewerRepostText}>🔁 {repostLabel} reposted</Text>
+                    </View>
+                  ) : null}
+                  {(item as any).quote_caption ? (
+                    <Text style={s.viewerQuote}>{(item as any).quote_caption}</Text>
+                  ) : null}
                   <View style={s.viewerHeader}>
                     <View style={s.viewerAvatar}>
                       {!item.shop_name && profile.avatar_url
@@ -1223,8 +1355,18 @@ export default function ProfileScreen() {
 
                   {item.media_urls?.length ? (
                     <View style={s.viewerMediaWrap}>
-                      <Image source={{ uri: item.media_urls[0] }} style={s.viewerImage} resizeMode="cover" />
-                      {item.media_type === 'video' && (
+                      {isProfileVideoItem(item) ? (
+                        <FeedVideo
+                          uri={item.media_urls[0]}
+                          active
+                          loop
+                          muted={false}
+                          style={s.viewerImage}
+                        />
+                      ) : (
+                        <Image source={{ uri: item.media_urls[0] }} style={s.viewerImage} resizeMode="cover" />
+                      )}
+                      {isProfileVideoItem(item) && (
                         <View style={s.viewerVideoBadge}>
                           <Text style={s.viewerVideoBadgeText}>▶</Text>
                         </View>
@@ -1287,9 +1429,20 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 10,
   },
-  postPlusBtn: { backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', padding: 4 },
+  postPlusBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   postPlusIcon: { fontSize: 28, color: Colors.text, fontWeight: '300' },
-  igUsername: { flex: 1, textAlign: 'center', color: Colors.text, fontSize: 18, fontWeight: '800' },
+  igBrandTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 28,
+    fontFamily: Fonts.displayXBold,
+    fontWeight: '900',
+    color: Colors.orange,
+    letterSpacing: -0.5,
+    textShadowColor: '#00000022',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
   igIconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   igIconBtnText: { color: Colors.text, fontSize: 26, fontWeight: '400', marginTop: -2 },
   igMenuIcon: { color: Colors.text, fontSize: 20, fontWeight: '700' },
@@ -1339,6 +1492,52 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   igActionIconText: { fontSize: 14 },
+  enquiryHeaderBtn: {
+    minWidth: 36,
+    height: 36,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  enquiryHeaderBtnText: { color: Colors.text, fontSize: 11, fontWeight: '700' },
+  enquiryHeaderDot: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: Colors.blue,
+    borderWidth: 1,
+    borderColor: Colors.card,
+  },
+  enquiryActionBtn: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: Colors.card,
+    borderRadius: 10,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    position: 'relative',
+  },
+  enquiryActionBtnText: { color: Colors.text, fontSize: 13, fontWeight: '700' },
+  enquiryActionDot: {
+    position: 'absolute',
+    top: 8,
+    right: 12,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.blue,
+  },
   followersStrip: {
     marginHorizontal: 20,
     marginBottom: 10,
@@ -1520,6 +1719,23 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border2,
     overflow: 'hidden',
+  },
+  viewerRepostBanner: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  viewerRepostText: {
+    color: Colors.orange,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  viewerQuote: {
+    color: Colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
   },
   viewerHeader: {
     flexDirection: 'row',

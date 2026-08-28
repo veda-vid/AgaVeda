@@ -211,4 +211,16 @@ export const SERVICE_CATEGORIES = [
   { id: 'other',        label: 'Other',         emoji: '🛠️' },
 ] as const;
 
+/** Sub-skills shown under the "Other" filter dropdown on Pros */
+export const OTHER_SERVICE_SUBCATEGORIES = [
+  { id: 'mistri',            label: 'Mistri / Mason' },
+  { id: 'majdoor',           label: 'Majdoor / Labour' },
+  { id: 'welder',            label: 'Welder' },
+  { id: 'mechanic',          label: 'Mechanic' },
+  { id: 'appliance_repair',  label: 'Appliance Repair' },
+  { id: 'masonry',           label: 'Masonry' },
+  { id: 'glasswork',         label: 'Glasswork' },
+  { id: 'fabricator',        label: 'Fabricator' },
+] as const;
+
 export const RADIUS_OPTIONS = [2, 5, 10, 20, 50] as const;

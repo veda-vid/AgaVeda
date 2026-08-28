@@ -1,133 +1,35 @@
-// app/seller/shop.tsx — Create / edit seller shop (required before posting)
-import { useState, useEffect } from 'react';
+// app/seller/shop.tsx — Create / edit seller shop (merchant dashboard)
+import { useState, useEffect, useRef } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-  ActivityIndicator,
-  StyleSheet,
-  Platform,
-  Image,
-  Modal,
-  Pressable,
+  View, Text, ScrollView, TouchableOpacity, TextInput, Alert, ActivityIndicator,
+  StyleSheet, Platform, Image, Modal, Pressable, Animated, useWindowDimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { useAuthStore } from '../../stores/authStore';
 import {
-  createShop,
-  getShopByOwner,
-  updateShop,
-  updateProfile as updateUserProfile,
-  uploadImage,
+  createShop, getShopByOwner, updateShop,
+  updateProfile as updateUserProfile, uploadImage,
 } from '../../lib/api';
 import { getSupabase, isDemoAuthEnabled } from '../../lib/supabase';
-import { Colors, SHOP_CATEGORIES } from '../../constants/theme';
-import type { ShopCategory } from '../../types';
+import { Colors, Fonts, SHOP_CATEGORIES, Shadow } from '../../constants/theme';
+import { getShopHoursState } from '../../lib/marketplaceUtils';
+import {
+  parseOperatingHours, scheduleToLegacyTimes, defaultWeeklySchedule, getWeekdayKey,
+} from '../../lib/shopScheduleUtils';
+import { WeeklyHoursPicker } from '../../components/seller/WeeklyHoursPicker';
+import { LocationSetupPicker } from '../../components/seller/LocationSetupPicker';
+import { MediaSourceSheet, type MediaSourceChoice } from '../../components/media/MediaSourceSheet';
+import { CameraCapture, type CapturedMedia } from '../../components/media/CameraCapture';
+import type { ShopCategory, ShopOperatingHours } from '../../types';
 
-const FIXED_SELLER_RADIUS_KM = 50;
-const WebInput = 'input' as any;
-const webTimeInputStyle: any = {
-  width: '100%',
-  border: 'none',
-  outline: 'none',
-  background: 'transparent',
-  color: Colors.text,
-  fontSize: 15,
-  fontWeight: 600,
-};
+const DEFAULT_SERVICE_RADIUS_KM = 20;
 
-type LocationMethod = 'gps' | 'manual';
-type TimeField = 'open' | 'close' | null;
-
-function pad2(value: number) {
-  return String(value).padStart(2, '0');
-}
-
-function normalizeTimeValue(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-
-  const twelveHour = trimmed.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
-  if (twelveHour) {
-    let hour = Number(twelveHour[1]) % 12;
-    if (twelveHour[3].toLowerCase() === 'pm') hour += 12;
-    return `${pad2(hour)}:${twelveHour[2]}`;
-  }
-
-  const twentyFourHour = trimmed.match(/^(\d{1,2}):(\d{2})$/);
-  if (twentyFourHour) {
-    return `${pad2(Math.min(23, Number(twentyFourHour[1])))}:${twentyFourHour[2]}`;
-  }
-
-  return '';
-}
-
-function formatDateTimeLocal(date: Date) {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-}
-
-function fallbackDateTimeValue(fallbackHour: number) {
-  const date = new Date();
-  date.setHours(fallbackHour, 0, 0, 0);
-  return formatDateTimeLocal(date);
-}
-
-function normalizeDateTimeValue(value: string, fallbackHour: number) {
-  const trimmed = value.trim();
-  if (!trimmed) return fallbackDateTimeValue(fallbackHour);
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(trimmed)) return trimmed;
-
-  const parsedTime = normalizeTimeValue(trimmed);
-  if (parsedTime) {
-    const [hour, minute] = parsedTime.split(':').map(Number);
-    const date = new Date();
-    date.setHours(hour, minute, 0, 0);
-    return formatDateTimeLocal(date);
-  }
-
-  const parsedDate = new Date(trimmed);
-  if (!Number.isNaN(parsedDate.valueOf())) {
-    return formatDateTimeLocal(parsedDate);
-  }
-
-  return fallbackDateTimeValue(fallbackHour);
-}
-
-function formatDateTimeLabel(value: string, fallbackHour: number) {
-  const normalized = normalizeDateTimeValue(value, fallbackHour);
-  const date = new Date(normalized);
-  if (Number.isNaN(date.valueOf())) return 'Select date and time';
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date);
-}
-
-function dateFromDateTimeValue(value: string, fallbackHour: number) {
-  const normalized = normalizeDateTimeValue(value, fallbackHour);
-  const parsed = new Date(normalized);
-  if (!Number.isNaN(parsed.valueOf())) return parsed;
-  const date = new Date();
-  date.setHours(fallbackHour, 0, 0, 0);
-  return date;
-}
-
-function eventToDateTimeValue(event: DateTimePickerEvent, date?: Date) {
-  if (event.type === 'dismissed' || !date) return null;
-  return formatDateTimeLocal(date);
-}
-
-function dateTimeValueToIso(value: string, fallbackHour: number) {
-  return dateFromDateTimeValue(value, fallbackHour).toISOString();
+function hexAlpha(hex: string, alpha: string) {
+  return `${hex}${alpha}`;
 }
 
 function categoryLabel(categoryId: ShopCategory) {
@@ -136,18 +38,155 @@ function categoryLabel(categoryId: ShopCategory) {
 
 function buildFormattedAddress(geo?: Location.LocationGeocodedAddress | null) {
   if (!geo) return '';
-  return [
-    geo.name,
-    geo.street,
-    geo.district,
-    geo.city,
-    geo.region,
-    geo.country,
-  ].filter(Boolean).join(', ');
+  return [geo.name, geo.street, geo.district, geo.city, geo.region, geo.country].filter(Boolean).join(', ');
+}
+
+function IconPhone({ color, size = 18 }: { color: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path d="M7.1 3.6c.4-.5 1.1-.6 1.6-.3l2.5 1.1c.5.2.8.8.7 1.3l-.5 2.4c-.1.4-.3.7-.7.9l-1.5.8a12.2 12.2 0 0 0 5.4 5.4l.8-1.5c.2-.4.5-.6.9-.7l2.4-.5c.6-.1 1.1.2 1.3.7l1.1 2.5c.3.6.2 1.2-.3 1.6l-1.3 1.2c-.5.4-1.1.6-1.8.6C11.6 19.1 4.9 12.4 4.9 4.9c0-.7.2-1.3.6-1.8l1.6-1.3Z" fill={color} />
+    </Svg>
+  );
+}
+
+function IconMail({ color, size = 18 }: { color: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Zm0 2 8 5 8-5" stroke={color} strokeWidth={2} fill="none" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function IconGlobe({ color, size = 18 }: { color: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth={2} fill="none" />
+      <Path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" stroke={color} strokeWidth={2} fill="none" />
+    </Svg>
+  );
+}
+
+function IconCamera({ color, size = 18 }: { color: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path d="M4 7h3l2-2h6l2 2h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Zm8 10a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" fill={color} />
+    </Svg>
+  );
+}
+
+function ScalePressable({
+  children, onPress, style, disabled, pressedScale = 0.97,
+}: {
+  children: React.ReactNode; onPress?: () => void; style?: object; disabled?: boolean; pressedScale?: number;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const animate = (v: number) => Animated.spring(scale, { toValue: v, useNativeDriver: true, friction: 8, tension: 160 }).start();
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      onPressIn={() => !disabled && animate(pressedScale)}
+      onPressOut={() => animate(1)}
+      style={Platform.OS === 'web' ? ({ cursor: disabled ? 'default' : 'pointer' } as object) : undefined}
+    >
+      <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
+    </Pressable>
+  );
+}
+
+function SectionCard({ index, title, subtitle, children }: {
+  index: number; title: string; subtitle?: string; children: React.ReactNode;
+}) {
+  return (
+    <View style={s.sectionCard}>
+      <View style={s.sectionHeader}>
+        <View style={s.sectionIndex}><Text style={s.sectionIndexText}>{index}</Text></View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.sectionTitle}>{title}</Text>
+          {subtitle ? <Text style={s.sectionSubtitle}>{subtitle}</Text> : null}
+        </View>
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function FieldInput({
+  label, value, onChangeText, placeholder, icon, keyboardType, autoCapitalize, multiline, maxLength, counter,
+}: {
+  label: string; value: string; onChangeText: (t: string) => void; placeholder?: string;
+  icon?: React.ReactNode; keyboardType?: 'default' | 'phone-pad' | 'email-address';
+  autoCapitalize?: 'none' | 'sentences'; multiline?: boolean; maxLength?: number; counter?: string;
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <View style={s.fieldWrap}>
+      <Text style={[s.fieldLabel, focused && s.fieldLabelFocused]}>{label}</Text>
+      <View style={[s.fieldBox, focused && s.fieldBoxFocused, multiline && s.fieldBoxArea]}>
+        {icon ? <View style={s.fieldIcon}>{icon}</View> : null}
+        <TextInput
+          style={[s.fieldInput, multiline && s.fieldInputArea]}
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={Colors.dim}
+          keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          multiline={multiline}
+          maxLength={maxLength}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+        />
+      </View>
+      {counter ? <Text style={s.fieldCounter}>{counter}</Text> : null}
+    </View>
+  );
+}
+
+function AvatarUploader({ url, uploading, onPress }: { url: string; uploading: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={s.avatarPicker} accessibilityRole="button">
+      {url ? (
+        <Image source={{ uri: url }} style={s.avatarImage} resizeMode="cover" />
+      ) : (
+        <View style={s.avatarPlaceholder}>
+          <Text style={s.avatarEmoji}>🏬</Text>
+          <Text style={s.avatarHint}>Shop image</Text>
+        </View>
+      )}
+      <View style={s.avatarCamera}>
+        {uploading ? <ActivityIndicator color={Colors.white} size="small" /> : <IconCamera color={Colors.white} size={16} />}
+      </View>
+    </Pressable>
+  );
+}
+
+function BannerUploader({ url, uploading, onPress }: { url: string; uploading: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={s.bannerPicker} accessibilityRole="button">
+      {url ? (
+        <>
+          <Image source={{ uri: url }} style={s.bannerImage} resizeMode="cover" />
+          <View style={s.bannerOverlay}><Text style={s.bannerOverlayText}>Tap to change wall</Text></View>
+        </>
+      ) : (
+        <View style={s.bannerEmpty}>
+          <IconCamera color={Colors.sub} size={28} />
+          <Text style={s.bannerEmptyTitle}>Upload shop wall</Text>
+          <Text style={s.bannerEmptyHint}>16:6 · Take photo or gallery</Text>
+        </View>
+      )}
+      {uploading ? (
+        <View style={s.bannerLoading}><ActivityIndicator color={Colors.orange} /></View>
+      ) : null}
+    </Pressable>
+  );
 }
 
 export default function SellerShopScreen() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const contentMaxWidth = Math.min(width - 32, 720);
   const { profile } = useAuthStore();
   const updateLocalProfile = useAuthStore(s => s.updateProfile);
   const [loading, setLoading] = useState(true);
@@ -155,14 +194,14 @@ export default function SellerShopScreen() {
   const [uploadingField, setUploadingField] = useState<'logo' | 'cover' | null>(null);
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [resolvingManualLocation, setResolvingManualLocation] = useState(false);
-  const [timePickerField, setTimePickerField] = useState<TimeField>(null);
   const [shopId, setShopId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<ShopCategory>('grocery');
   const [address, setAddress] = useState('');
   const [manualLocation, setManualLocation] = useState('');
-  const [locationMethod, setLocationMethod] = useState<LocationMethod>('gps');
+  const [locationMethod, setLocationMethod] = useState<'gps' | 'manual'>('gps');
+  const [serviceRadiusKm, setServiceRadiusKm] = useState(DEFAULT_SERVICE_RADIUS_KM);
   const [locationCity, setLocationCity] = useState(profile?.city ?? '');
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(
     profile?.lat != null && profile?.lng != null ? { lat: profile.lat, lng: profile.lng } : null,
@@ -172,15 +211,19 @@ export default function SellerShopScreen() {
   const [email, setEmail] = useState(profile?.email ?? '');
   const [website, setWebsite] = useState('');
   const [instagram, setInstagram] = useState('');
-  const [openTime, setOpenTime] = useState('09:00');
-  const [closeTime, setCloseTime] = useState('21:00');
+  const [operatingHours, setOperatingHours] = useState<ShopOperatingHours>(() => ({
+    schedule: defaultWeeklySchedule(),
+    closedToday: false,
+    is24_7: false,
+  }));
   const [logoUrl, setLogoUrl] = useState('');
   const [coverUrl, setCoverUrl] = useState('');
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [mediaField, setMediaField] = useState<'logo' | 'cover' | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cropPreviewUri, setCropPreviewUri] = useState<string | null>(null);
 
-  const goToShopsTab = () => {
-    router.replace('/(tabs)/shops');
-  };
+  const goToShopsTab = () => router.replace('/(tabs)/shops');
 
   const showMessage = (title: string, body: string, onOk?: () => void) => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -209,12 +252,9 @@ export default function SellerShopScreen() {
         clearTimeout(timeoutId);
         const data = await response.json();
         const addressParts = [
-          data?.name,
-          data?.address?.road,
-          data?.address?.suburb,
+          data?.name, data?.address?.road, data?.address?.suburb,
           data?.address?.city || data?.address?.town || data?.address?.village,
-          data?.address?.state,
-          data?.address?.country,
+          data?.address?.state, data?.address?.country,
         ].filter(Boolean);
         return {
           city: data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.state || 'Current Location',
@@ -227,17 +267,9 @@ export default function SellerShopScreen() {
   };
 
   const applyResolvedLocation = ({
-    latitude,
-    longitude,
-    city,
-    formattedAddress,
-    method,
+    latitude, longitude, city, formattedAddress, method,
   }: {
-    latitude: number;
-    longitude: number;
-    city: string;
-    formattedAddress: string;
-    method: LocationMethod;
+    latitude: number; longitude: number; city: string; formattedAddress: string; method: 'gps' | 'manual';
   }) => {
     setCoords({ lat: latitude, lng: longitude });
     setLocationCity(city);
@@ -265,8 +297,8 @@ export default function SellerShopScreen() {
         setEmail(shop.email ?? profile.email ?? '');
         setWebsite(shop.website ?? '');
         setInstagram(shop.instagram ?? '');
-        setOpenTime(normalizeDateTimeValue(shop.open_time, 9));
-        setCloseTime(normalizeDateTimeValue(shop.close_time, 21));
+        setOperatingHours(parseOperatingHours(shop));
+        setServiceRadiusKm(profile?.radius_km ?? DEFAULT_SERVICE_RADIUS_KM);
         setLogoUrl(shop.logo_url ?? '');
         setCoverUrl(shop.cover_url ?? '');
       })
@@ -274,7 +306,28 @@ export default function SellerShopScreen() {
       .finally(() => setLoading(false));
   }, [profile?.id]);
 
-  const pickAndUploadImage = async (field: 'logo' | 'cover') => {
+  const uploadShopImageUri = async (field: 'logo' | 'cover', uri: string) => {
+    if (!profile) return;
+    setUploadingField(field);
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const mime = blob.type || 'image/jpeg';
+      const ext = mime.includes('png') ? 'png' : 'jpg';
+      const path = `shops/${profile.id}/${field}-${Date.now()}.${ext}`;
+      const url = await uploadImage('cityconnect', path, blob, mime);
+      if (field === 'logo') setLogoUrl(url);
+      else setCoverUrl(url);
+    } catch (e: any) {
+      showMessage('Upload failed', e?.message || 'Could not upload the selected image.');
+    } finally {
+      setUploadingField(null);
+      setCropPreviewUri(null);
+    }
+  };
+
+  /** Gallery pick with built-in crop, then upload */
+  const pickFromGallery = async (field: 'logo' | 'cover') => {
     if (!profile) return;
     try {
       if (Platform.OS !== 'web') {
@@ -284,30 +337,56 @@ export default function SellerShopScreen() {
           return;
         }
       }
-
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.8,
         allowsEditing: true,
         aspect: field === 'logo' ? [1, 1] : [16, 6],
       });
-
       if (result.canceled || !result.assets[0]) return;
-
-      setUploadingField(field);
-      const asset = result.assets[0];
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const path = `shops/${profile.id}/${field}-${Date.now()}.jpg`;
-      const url = await uploadImage('cityconnect', path, blob, 'image/jpeg');
-
-      if (field === 'logo') setLogoUrl(url);
-      else setCoverUrl(url);
+      await uploadShopImageUri(field, result.assets[0].uri);
     } catch (e: any) {
       showMessage('Upload failed', e?.message || 'Could not upload the selected image.');
-    } finally {
-      setUploadingField(null);
     }
+  };
+
+  /**
+   * After live camera capture: on native, camera already cropped via ImagePicker.
+   * On web, show a confirm/preview step before upload (crop utility).
+   */
+  const onShopPhotoCaptured = async (media: CapturedMedia) => {
+    setCameraOpen(false);
+    const field = mediaField;
+    if (!field || media.type !== 'image') {
+      setMediaField(null);
+      return;
+    }
+
+    if (Platform.OS !== 'web') {
+      setMediaField(null);
+      await uploadShopImageUri(field, media.uri);
+      return;
+    }
+
+    // Web: pass into crop/preview confirm before saving
+    setCropPreviewUri(media.uri);
+  };
+
+  const onMediaSourceSelect = (choice: MediaSourceChoice) => {
+    const field = mediaField;
+    if (!field) return;
+    if (choice === 'gallery') {
+      setMediaField(null);
+      void pickFromGallery(field);
+      return;
+    }
+    // Take Photo — open live camera
+    setCameraOpen(true);
+  };
+
+  const openMediaSheet = (field: 'logo' | 'cover') => {
+    if (uploadingField) return;
+    setMediaField(field);
   };
 
   const detectCurrentLocation = async () => {
@@ -315,7 +394,6 @@ export default function SellerShopScreen() {
     try {
       let latitude: number;
       let longitude: number;
-
       if (Platform.OS === 'web' && typeof navigator !== 'undefined' && 'geolocation' in navigator) {
         const position = await new Promise<GeolocationPosition>((resolve, reject) =>
           navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 7000, maximumAge: 60000 }),
@@ -332,15 +410,8 @@ export default function SellerShopScreen() {
         latitude = position.coords.latitude;
         longitude = position.coords.longitude;
       }
-
       const details = await resolveLocationDetails(latitude, longitude);
-      applyResolvedLocation({
-        latitude,
-        longitude,
-        city: details.city,
-        formattedAddress: details.formattedAddress,
-        method: 'gps',
-      });
+      applyResolvedLocation({ latitude, longitude, city: details.city, formattedAddress: details.formattedAddress, method: 'gps' });
     } catch (e: any) {
       showMessage('Location unavailable', e?.message || 'Could not detect your current location. Try Manual Entry.');
     } finally {
@@ -350,26 +421,15 @@ export default function SellerShopScreen() {
 
   const useManualLocation = async () => {
     const query = manualLocation.trim();
-    if (!query) {
-      showMessage('Required', 'Enter a manual location to continue.');
-      return;
-    }
-
+    if (!query) { showMessage('Required', 'Enter a manual location to continue.'); return; }
     setResolvingManualLocation(true);
     try {
       let latitude: number | null = null;
       let longitude: number | null = null;
-
       try {
         const results = await Location.geocodeAsync(query);
-        if (results[0]) {
-          latitude = results[0].latitude;
-          longitude = results[0].longitude;
-        }
-      } catch {
-        // Fall through to the web lookup below.
-      }
-
+        if (results[0]) { latitude = results[0].latitude; longitude = results[0].longitude; }
+      } catch { /* fall through */ }
       if (latitude == null || longitude == null) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -379,25 +439,14 @@ export default function SellerShopScreen() {
         );
         clearTimeout(timeoutId);
         const data = await response.json();
-        if (data?.[0]) {
-          latitude = Number(data[0].lat);
-          longitude = Number(data[0].lon);
-        }
+        if (data?.[0]) { latitude = Number(data[0].lat); longitude = Number(data[0].lon); }
       }
-
       if (latitude == null || longitude == null) {
         showMessage('Location not found', 'Try a more complete address with area, city, and landmark.');
         return;
       }
-
       const details = await resolveLocationDetails(latitude, longitude);
-      applyResolvedLocation({
-        latitude,
-        longitude,
-        city: details.city,
-        formattedAddress: query,
-        method: 'manual',
-      });
+      applyResolvedLocation({ latitude, longitude, city: details.city, formattedAddress: query, method: 'manual' });
     } catch (e: any) {
       showMessage('Manual location failed', e?.message || 'Could not verify that address. Please refine it.');
     } finally {
@@ -405,30 +454,27 @@ export default function SellerShopScreen() {
     }
   };
 
-  const handleTimeChange = (field: 'open' | 'close') => (event: DateTimePickerEvent, date?: Date) => {
-    const nextValue = eventToDateTimeValue(event, date);
-    if (Platform.OS === 'android') setTimePickerField(null);
-    if (!nextValue) return;
-    if (field === 'open') setOpenTime(nextValue);
-    else setCloseTime(nextValue);
+  const applyPlaceSelection = async (place: { label: string; lat: number; lng: number }) => {
+    const details = await resolveLocationDetails(place.lat, place.lng);
+    applyResolvedLocation({
+      latitude: place.lat,
+      longitude: place.lng,
+      city: details.city,
+      formattedAddress: place.label || details.formattedAddress,
+      method: 'manual',
+    });
+    setManualLocation(place.label || details.formattedAddress);
   };
 
   const save = async () => {
     if (!profile) return;
-
     try {
       if (!isDemoAuthEnabled()) {
         const { data } = await getSupabase().auth.getSession();
         const sessionUserId = data.session?.user?.id;
-        if (!sessionUserId) {
-          showMessage('Not authenticated', 'Supabase session is missing. Please log in again as the seller.');
-          return;
-        }
+        if (!sessionUserId) { showMessage('Not authenticated', 'Supabase session is missing. Please log in again as the seller.'); return; }
         if (sessionUserId !== profile.id) {
-          showMessage(
-            'Auth mismatch',
-            `Supabase user id (${sessionUserId}) does not match profile id (${profile.id}). Log out and log in again.`,
-          );
+          showMessage('Auth mismatch', `Supabase user id (${sessionUserId}) does not match profile id (${profile.id}). Log out and log in again.`);
           return;
         }
       }
@@ -439,7 +485,11 @@ export default function SellerShopScreen() {
 
     if (!name.trim()) { showMessage('Required', 'Shop name is required.'); return; }
     if (!category) { showMessage('Required', 'Select a shop category.'); return; }
-    if (!openTime.trim() || !closeTime.trim()) { showMessage('Required', 'Open and close date-time values are required.'); return; }
+    const hasEnabledDay = Object.values(operatingHours.schedule).some(d => d.enabled);
+    if (!operatingHours.is24_7 && !hasEnabledDay) {
+      showMessage('Required', 'Enable at least one day in your operating schedule.');
+      return;
+    }
     if (!phone.trim()) { showMessage('Required', 'Phone number is required.'); return; }
     if (!email.trim()) { showMessage('Required', 'Email is required.'); return; }
     if (!email.includes('@')) { showMessage('Invalid email', 'Enter a valid business email address.'); return; }
@@ -448,66 +498,45 @@ export default function SellerShopScreen() {
       return;
     }
     if (!logoUrl) { showMessage('Required', 'Shop image is required.'); return; }
-    if (!coverUrl) { showMessage('Required', 'Shop wall image is required.'); return; }
+    if (!coverUrl) { showMessage('Required', 'Shop banner is required.'); return; }
     if (description.trim().length > 500) { showMessage('Too long', 'Description can be up to 500 characters only.'); return; }
 
     setSaving(true);
     try {
       await updateUserProfile(profile.id, {
-        role: 'seller',
-        city: locationCity.trim(),
-        lat: coords.lat,
-        lng: coords.lng,
-        radius_km: FIXED_SELLER_RADIUS_KM,
-        phone: phone.trim(),
-        email: email.trim(),
+        role: 'seller', city: locationCity.trim(), lat: coords.lat, lng: coords.lng,
+        radius_km: serviceRadiusKm, email: email.trim(),
       });
       updateLocalProfile({
-        role: 'seller',
-        city: locationCity.trim(),
-        lat: coords.lat,
-        lng: coords.lng,
-        radius_km: FIXED_SELLER_RADIUS_KM,
-        phone: phone.trim(),
-        email: email.trim(),
+        role: 'seller', city: locationCity.trim(), lat: coords.lat, lng: coords.lng,
+        radius_km: serviceRadiusKm, email: email.trim(),
       });
 
+      const { openTime, closeTime } = scheduleToLegacyTimes(operatingHours);
+      const hoursState = getShopHoursState(openTime, closeTime, new Date(), operatingHours);
+      const shopIsOpen = operatingHours.closedToday
+        ? false
+        : (hoursState === 'open' || hoursState === 'closing_soon');
+
       const payload = {
-        name: name.trim(),
-        description: description.trim(),
-        category,
-        logo_url: logoUrl,
-        cover_url: coverUrl,
-        address: address.trim(),
-        city: locationCity.trim(),
-        lat: coords.lat,
-        lng: coords.lng,
-        phone: phone.trim(),
-        email: email.trim(),
-        whatsapp: whatsapp.trim() || null,
-        website: website.trim() || null,
-        instagram: instagram.trim() || null,
-        open_time: dateTimeValueToIso(openTime, 9),
-        close_time: dateTimeValueToIso(closeTime, 21),
-        is_open: true,
-        is_verified: false,
-        is_active: true,
+        name: name.trim(), description: description.trim(), category,
+        logo_url: logoUrl, cover_url: coverUrl, address: address.trim(), city: locationCity.trim(),
+        lat: coords.lat, lng: coords.lng, phone: phone.trim(), email: email.trim(),
+        whatsapp: whatsapp.trim() || null, website: website.trim() || null, instagram: instagram.trim() || null,
+        open_time: openTime, close_time: closeTime,
+        operating_hours: operatingHours as any,
+        is_open: shopIsOpen,
+        is_verified: false, is_active: true,
       };
 
-      if (shopId) {
-        await updateShop(shopId, payload);
-      } else {
-        await createShop({
-          owner_id: profile.id,
-          ...payload,
-        });
-      }
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9be6ad'},body:JSON.stringify({sessionId:'9be6ad',runId:'shop-save-debug',hypothesisId:'C',location:'app/seller/shop.tsx:save:payload',message:'shop save payload hours',data:{openTime,closeTime,hoursState,shopIsOpen,closedToday:operatingHours.closedToday,is24_7:operatingHours.is24_7,todayKey:getWeekdayKey(),todaySchedule:operatingHours.schedule[getWeekdayKey()]},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
-      showMessage(
-        'Saved',
-        'Your shop profile has been saved. You can now start posting products and updates.',
-        goToShopsTab,
-      );
+      if (shopId) await updateShop(shopId, payload);
+      else await createShop({ owner_id: profile.id, ...payload });
+
+      showMessage('Saved', 'Your shop profile has been saved. You can now start posting products and updates.', goToShopsTab);
     } catch (e: any) {
       console.error('Save shop failed', e);
       showMessage('Error', e?.message || 'Could not save shop');
@@ -524,238 +553,107 @@ export default function SellerShopScreen() {
     );
   }
 
+  const pageTitle = shopId ? 'Edit Shop' : 'Create Shop';
+
   return (
     <View style={s.root}>
-      <View style={s.header}>
-        <TouchableOpacity onPress={goToShopsTab}><Text style={s.back}>✕</Text></TouchableOpacity>
-        <Text style={s.headerTitle}>{shopId ? 'Edit Shop' : 'Create Shop'}</Text>
-        <TouchableOpacity onPress={save} disabled={saving} style={s.saveBtn}>
-          {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.saveText}>Save</Text>}
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
-        <Text style={s.sectionTitle}>Business Basics</Text>
-
-        <Text style={s.label}>SHOP NAME *</Text>
-        <TextInput
-          style={s.input}
-          value={name}
-          onChangeText={setName}
-          placeholder="e.g. Sharma Toy Store"
-          placeholderTextColor={Colors.dim}
-        />
-
-        <Text style={s.label}>CATEGORY *</Text>
-        <Pressable style={s.selectField} onPress={() => setCategoryPickerOpen(true)}>
-          <Text style={s.selectValue}>
-            {(SHOP_CATEGORIES.find(option => option.id === category)?.emoji ?? '🏪')} {categoryLabel(category)}
-          </Text>
-          <Text style={s.selectChevron}>v</Text>
-        </Pressable>
-
-        <Text style={s.label}>DESCRIPTION (optional, 500 characters)</Text>
-        <TextInput
-          style={[s.input, s.area]}
-          value={description}
-          onChangeText={setDescription}
-          multiline
-          maxLength={500}
-          placeholder="Tell customers what your shop offers."
-          placeholderTextColor={Colors.dim}
-        />
-        <Text style={s.counter}>{description.trim().length}/500</Text>
-
-        <Text style={s.sectionTitle}>Media</Text>
-        <View style={s.mediaRow}>
-          <TouchableOpacity onPress={() => pickAndUploadImage('logo')} style={s.mediaCard} activeOpacity={0.85}>
-            {logoUrl ? <Image source={{ uri: logoUrl }} style={s.mediaImage} /> : <Text style={s.mediaEmoji}>🏬</Text>}
-            <Text style={s.mediaTitle}>Shop Image *</Text>
-            <Text style={s.mediaHint}>{uploadingField === 'logo' ? 'Uploading...' : 'Tap to crop in square shop DP ratio'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity onPress={() => pickAndUploadImage('cover')} style={s.mediaCard} activeOpacity={0.85}>
-            {coverUrl ? <Image source={{ uri: coverUrl }} style={s.mediaImage} /> : <Text style={s.mediaEmoji}>🖼️</Text>}
-            <Text style={s.mediaTitle}>Shop Wall *</Text>
-            <Text style={s.mediaHint}>{uploadingField === 'cover' ? 'Uploading...' : 'Tap to crop in wide Facebook-style cover ratio'}</Text>
-          </TouchableOpacity>
+      <SafeAreaView edges={['top']} style={s.safeTop}>
+        <View style={s.stickyHeader}>
+          <Pressable onPress={goToShopsTab} style={s.exitBtn} hitSlop={12}>
+            <Text style={s.exitText}>✕</Text>
+          </Pressable>
+          <Text style={s.headerTitle}>{pageTitle}</Text>
+          <ScalePressable onPress={save} disabled={saving} style={[s.saveBtn, saving && s.saveBtnDisabled]}>
+            {saving ? <ActivityIndicator color={Colors.white} size="small" /> : <Text style={s.saveBtnText}>Save Changes</Text>}
+          </ScalePressable>
         </View>
+      </SafeAreaView>
 
-        <Text style={s.sectionTitle}>Contact & Hours</Text>
-        <Text style={s.label}>PHONE NUMBER *</Text>
-        <TextInput
-          style={s.input}
-          value={phone}
-          onChangeText={setPhone}
-          keyboardType="phone-pad"
-          placeholder="+91..."
-          placeholderTextColor={Colors.dim}
-        />
+      <ScrollView contentContainerStyle={[s.scrollContent, { alignItems: 'center' }]} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <View style={[s.formColumn, { maxWidth: contentMaxWidth, width: '100%' }]}>
 
-        <Text style={s.label}>EMAIL *</Text>
-        <TextInput
-          style={s.input}
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          placeholder="shop@example.com"
-          placeholderTextColor={Colors.dim}
-        />
-
-        <Text style={s.label}>WHATSAPP (optional)</Text>
-        <TextInput
-          style={s.input}
-          value={whatsapp}
-          onChangeText={setWhatsapp}
-          keyboardType="phone-pad"
-          placeholder="91XXXXXXXXXX"
-          placeholderTextColor={Colors.dim}
-        />
-
-        <Text style={s.label}>WEBSITE (optional)</Text>
-        <TextInput
-          style={s.input}
-          value={website}
-          onChangeText={setWebsite}
-          autoCapitalize="none"
-          placeholder="https://yourshop.com"
-          placeholderTextColor={Colors.dim}
-        />
-
-        <Text style={s.label}>INSTAGRAM (optional)</Text>
-        <TextInput
-          style={s.input}
-          value={instagram}
-          onChangeText={setInstagram}
-          autoCapitalize="none"
-          placeholder="@yourshop"
-          placeholderTextColor={Colors.dim}
-        />
-
-        <View style={s.row}>
-          <View style={s.col}>
-            <Text style={s.label}>OPEN DATE & TIME *</Text>
-            {Platform.OS === 'web' ? (
-              <View style={s.webTimeWrap}>
-                <WebInput
-                  type="datetime-local"
-                  value={normalizeDateTimeValue(openTime, 9)}
-                  onChange={(event: any) => setOpenTime(event.target.value)}
-                  style={webTimeInputStyle}
-                />
-              </View>
-            ) : (
-              <TouchableOpacity style={s.timeButton} activeOpacity={0.85} onPress={() => setTimePickerField('open')}>
-                <Text style={s.timeValue}>{formatDateTimeLabel(openTime, 9)}</Text>
-                <Text style={s.timeAction}>Choose</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          <View style={s.col}>
-            <Text style={s.label}>CLOSE DATE & TIME *</Text>
-            {Platform.OS === 'web' ? (
-              <View style={s.webTimeWrap}>
-                <WebInput
-                  type="datetime-local"
-                  value={normalizeDateTimeValue(closeTime, 21)}
-                  onChange={(event: any) => setCloseTime(event.target.value)}
-                  style={webTimeInputStyle}
-                />
-              </View>
-            ) : (
-              <TouchableOpacity style={s.timeButton} activeOpacity={0.85} onPress={() => setTimePickerField('close')}>
-                <Text style={s.timeValue}>{formatDateTimeLabel(closeTime, 21)}</Text>
-                <Text style={s.timeAction}>Choose</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
-        <Text style={s.sectionTitle}>Location & Reach</Text>
-        <View style={s.methodRow}>
-          <TouchableOpacity
-            style={[s.methodCard, locationMethod === 'gps' && s.methodCardActive]}
-            activeOpacity={0.88}
-            onPress={() => setLocationMethod('gps')}
-          >
-            <Text style={s.methodIcon}>📍</Text>
-            <Text style={s.methodTitle}>Auto Pick Location</Text>
-            <Text style={s.methodText}>Use current GPS coordinates</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[s.methodCard, locationMethod === 'manual' && s.methodCardActive]}
-            activeOpacity={0.88}
-            onPress={() => {
-              setLocationMethod('manual');
-              setManualLocation(address || manualLocation);
-            }}
-          >
-            <Text style={s.methodIcon}>🏠</Text>
-            <Text style={s.methodTitle}>Manual Entry</Text>
-            <Text style={s.methodText}>Enter the exact shop address</Text>
-          </TouchableOpacity>
-        </View>
-
-        {locationMethod === 'gps' ? (
-          <View style={s.locationCard}>
-            <Text style={s.locationTitle}>Current Location</Text>
-            <Text style={s.locationHint}>Fetch the shop address directly from your current device location.</Text>
-            <TouchableOpacity style={s.primaryAction} onPress={detectCurrentLocation} disabled={detectingLocation}>
-              {detectingLocation
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.primaryActionText}>Detect My Location</Text>}
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={s.locationCard}>
-            <Text style={s.locationTitle}>Manual Location</Text>
-            <Text style={s.locationHint}>Enter area, street, landmark, and city so we can pin the shop accurately.</Text>
-            <TextInput
-              style={s.input}
-              value={manualLocation}
-              onChangeText={setManualLocation}
-              placeholder="e.g. SCO 21, Sector 7C, Chandigarh"
-              placeholderTextColor={Colors.dim}
+          <SectionCard index={1} title="Basic Details" subtitle="Name, category, and shop description">
+            <FieldInput label="Shop name *" value={name} onChangeText={setName} placeholder="e.g. Sharma Toy Store" />
+            <View style={s.fieldWrap}>
+              <Text style={s.fieldLabel}>Category *</Text>
+              <Pressable style={s.selectField} onPress={() => setCategoryPickerOpen(true)}>
+                <Text style={s.selectValue}>
+                  {(SHOP_CATEGORIES.find(o => o.id === category)?.emoji ?? '🏪')} {categoryLabel(category)}
+                </Text>
+                <Text style={s.selectChevron}>▾</Text>
+              </Pressable>
+            </View>
+            <FieldInput
+              label="Description"
+              value={description}
+              onChangeText={setDescription}
+              placeholder="Tell customers what your shop offers."
+              multiline
+              maxLength={500}
+              counter={`${description.trim().length}/500`}
             />
-            <TouchableOpacity style={s.primaryAction} onPress={useManualLocation} disabled={resolvingManualLocation}>
-              {resolvingManualLocation
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.primaryActionText}>Use Manual Address</Text>}
-            </TouchableOpacity>
-          </View>
-        )}
+          </SectionCard>
 
-        <View style={s.infoCard}>
-          <Text style={s.infoTitle}>Selected Shop Location</Text>
-          <Text style={s.infoText}>Address: {address || 'Not selected yet'}</Text>
-          <Text style={s.infoText}>City: {locationCity || 'Not selected yet'}</Text>
-          <Text style={s.infoText}>
-            Coordinates: {coords ? `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : 'Not selected yet'}
+          <SectionCard index={2} title="Branding & Media" subtitle="Shop image and wall customers will see">
+            <View style={[s.brandingRow, width >= 600 && s.brandingRowWide]}>
+              <View style={s.avatarCol}>
+                <Text style={s.mediaLabel}>Shop Image *</Text>
+                <AvatarUploader url={logoUrl} uploading={uploadingField === 'logo'} onPress={() => openMediaSheet('logo')} />
+              </View>
+              <View style={s.bannerCol}>
+                <Text style={s.mediaLabel}>Shop Wall *</Text>
+                <BannerUploader url={coverUrl} uploading={uploadingField === 'cover'} onPress={() => openMediaSheet('cover')} />
+              </View>
+            </View>
+          </SectionCard>
+
+          <SectionCard index={3} title="Contact & Socials" subtitle="How customers reach you">
+            <FieldInput label="Phone *" value={phone} onChangeText={setPhone} placeholder="+91..." keyboardType="phone-pad" icon={<IconPhone color={Colors.sub} />} />
+            <FieldInput label="Email *" value={email} onChangeText={setEmail} placeholder="shop@example.com" keyboardType="email-address" autoCapitalize="none" icon={<IconMail color={Colors.sub} />} />
+            <FieldInput label="WhatsApp" value={whatsapp} onChangeText={setWhatsapp} placeholder="91XXXXXXXXXX" keyboardType="phone-pad" icon={<IconPhone color={Colors.sub} />} />
+            <FieldInput label="Website" value={website} onChangeText={setWebsite} placeholder="https://yourshop.com" autoCapitalize="none" icon={<IconGlobe color={Colors.sub} />} />
+            <FieldInput label="Instagram" value={instagram} onChangeText={setInstagram} placeholder="@yourshop" autoCapitalize="none" icon={<Text style={s.igIcon}>📸</Text>} />
+          </SectionCard>
+
+          <SectionCard index={4} title="Business Hours" subtitle="Weekly schedule · presets · closed today">
+            <WeeklyHoursPicker value={operatingHours} onChange={setOperatingHours} />
+          </SectionCard>
+
+          <SectionCard index={5} title="Location Setup" subtitle="Pin your shop · search · delivery radius">
+            <LocationSetupPicker
+              method={locationMethod}
+              onMethodChange={setLocationMethod}
+              coords={coords}
+              address={address}
+              city={locationCity}
+              manualQuery={manualLocation}
+              onManualQueryChange={setManualLocation}
+              serviceRadiusKm={serviceRadiusKm}
+              onServiceRadiusChange={setServiceRadiusKm}
+              detecting={detectingLocation}
+              resolving={resolvingManualLocation}
+              onDetectGps={detectCurrentLocation}
+              onConfirmManual={useManualLocation}
+              onSelectPlace={applyPlaceSelection}
+            />
+          </SectionCard>
+
+          <Text style={s.footerHint}>
+            Your shop appears to buyers within {serviceRadiusKm} km. Confirm the map preview before saving.
           </Text>
-          <Text style={s.infoText}>Radius: {FIXED_SELLER_RADIUS_KM} km (fixed for sellers)</Text>
         </View>
-
-        <Text style={s.hint}>
-          Choose either auto-pick or manual entry, then confirm the saved location card above. Seller reach remains fixed at {FIXED_SELLER_RADIUS_KM} km.
-        </Text>
       </ScrollView>
 
       <Modal transparent visible={categoryPickerOpen} animationType="fade" onRequestClose={() => setCategoryPickerOpen(false)}>
         <Pressable style={s.modalBackdrop} onPress={() => setCategoryPickerOpen(false)}>
-          <Pressable style={s.modalCard}>
-            <Text style={s.modalTitle}>Select Shop Category</Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
+          <Pressable style={s.modalCard} onPress={() => {}}>
+            <Text style={s.modalTitle}>Select category</Text>
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 360 }}>
               {SHOP_CATEGORIES.map(option => (
                 <TouchableOpacity
                   key={option.id}
-                  onPress={() => {
-                    setCategory(option.id as ShopCategory);
-                    setCategoryPickerOpen(false);
-                  }}
+                  onPress={() => { setCategory(option.id as ShopCategory); setCategoryPickerOpen(false); }}
                   style={[s.modalOption, category === option.id && s.modalOptionActive]}
-                  activeOpacity={0.85}
                 >
                   <Text style={s.modalOptionText}>{option.emoji} {option.label}</Text>
                 </TouchableOpacity>
@@ -765,26 +663,69 @@ export default function SellerShopScreen() {
         </Pressable>
       </Modal>
 
-      {Platform.OS !== 'web' && timePickerField ? (
-        <Modal transparent animationType="slide" visible onRequestClose={() => setTimePickerField(null)}>
-          <Pressable style={s.modalBackdrop} onPress={() => setTimePickerField(null)}>
-            <Pressable style={s.timeModalCard}>
-              <Text style={s.modalTitle}>{timePickerField === 'open' ? 'Select Open Date & Time' : 'Select Close Date & Time'}</Text>
-              <DateTimePicker
-                value={dateFromDateTimeValue(timePickerField === 'open' ? openTime : closeTime, timePickerField === 'open' ? 9 : 21)}
-                mode="datetime"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={handleTimeChange(timePickerField)}
+      <MediaSourceSheet
+        visible={!!mediaField && !cameraOpen && !cropPreviewUri}
+        title={mediaField === 'cover' ? 'Shop Wall' : 'Shop Image'}
+        cameraLabel="Take Photo"
+        galleryLabel="Choose from Gallery"
+        onClose={() => setMediaField(null)}
+        onSelect={onMediaSourceSelect}
+      />
+
+      <CameraCapture
+        visible={cameraOpen}
+        mode="photo"
+        onClose={() => {
+          setCameraOpen(false);
+          setMediaField(null);
+        }}
+        onCapture={media => { void onShopPhotoCaptured(media); }}
+      />
+
+      <Modal
+        transparent
+        visible={!!cropPreviewUri && !!mediaField}
+        animationType="fade"
+        onRequestClose={() => { setCropPreviewUri(null); setMediaField(null); }}
+      >
+        <View style={s.cropBackdrop}>
+          <View style={s.cropCard}>
+            <Text style={s.modalTitle}>
+              {mediaField === 'cover' ? 'Preview Shop Wall' : 'Preview Shop Image'}
+            </Text>
+            {cropPreviewUri ? (
+              <Image
+                source={{ uri: cropPreviewUri }}
+                style={mediaField === 'logo' ? s.cropAvatar : s.cropBanner}
+                resizeMode="cover"
               />
-              {Platform.OS === 'ios' ? (
-                <TouchableOpacity style={s.primaryAction} onPress={() => setTimePickerField(null)}>
-                  <Text style={s.primaryActionText}>Done</Text>
-                </TouchableOpacity>
-              ) : null}
-            </Pressable>
-          </Pressable>
-        </Modal>
-      ) : null}
+            ) : null}
+            <Text style={s.cropHint}>Confirm to save, or retake with the camera.</Text>
+            <View style={s.cropActions}>
+              <TouchableOpacity
+                style={s.cropSecondary}
+                onPress={() => {
+                  setCropPreviewUri(null);
+                  setCameraOpen(true);
+                }}
+              >
+                <Text style={s.cropSecondaryText}>Retake</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={s.cropPrimary}
+                disabled={!!uploadingField}
+                onPress={() => {
+                  if (mediaField && cropPreviewUri) void uploadShopImageUri(mediaField, cropPreviewUri);
+                }}
+              >
+                {uploadingField
+                  ? <ActivityIndicator color={Colors.white} />
+                  : <Text style={s.cropPrimaryText}>Use Photo</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -792,171 +733,208 @@ export default function SellerShopScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bg },
   center: { alignItems: 'center', justifyContent: 'center' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 52,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  safeTop: { backgroundColor: Colors.bg, borderBottomWidth: 1, borderBottomColor: Colors.border, ...Shadow.sm },
+  stickyHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 12, gap: 12,
   },
-  back: { color: Colors.sub, fontSize: 22, width: 40 },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: Colors.text },
+  exitBtn: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.card,
+    borderWidth: 1, borderColor: Colors.border2, alignItems: 'center', justifyContent: 'center',
+  },
+  exitText: { color: Colors.sub, fontSize: 16, fontWeight: '700' },
+  headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontFamily: Fonts.displayXBold, fontWeight: '800', color: Colors.text },
   saveBtn: {
-    backgroundColor: Colors.orange,
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    minWidth: 64,
-    alignItems: 'center',
+    backgroundColor: Colors.orange, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10,
+    minWidth: 110, alignItems: 'center', shadowColor: Colors.orange, shadowOpacity: 0.35, shadowRadius: 8, elevation: 4,
   },
-  saveText: { color: Colors.white, fontWeight: '700' },
-  content: { padding: 16, paddingBottom: 40 },
-  sectionTitle: { color: Colors.text, fontSize: 18, fontWeight: '800', marginTop: 8, marginBottom: 8 },
-  label: { fontSize: 11, fontWeight: '700', color: Colors.sub, letterSpacing: 0.6, marginBottom: 8, marginTop: 12 },
-  input: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 12,
-    color: Colors.text,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
+  saveBtnDisabled: { opacity: 0.7 },
+  saveBtnText: { color: Colors.white, fontFamily: Fonts.bodySemiBold, fontWeight: '700', fontSize: 13 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 48 },
+  formColumn: { gap: 16 },
+  sectionCard: {
+    backgroundColor: hexAlpha(Colors.card, 'F0'),
+    borderRadius: 16, borderWidth: 1, borderColor: Colors.border2,
+    padding: 18, gap: 14, ...Shadow.sm,
   },
-  area: { minHeight: 100, textAlignVertical: 'top' },
-  counter: { color: Colors.dim, fontSize: 11, marginTop: 6, textAlign: 'right' },
+  sectionHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 4 },
+  sectionIndex: {
+    width: 28, height: 28, borderRadius: 8, backgroundColor: hexAlpha(Colors.orange, '22'),
+    alignItems: 'center', justifyContent: 'center',
+  },
+  sectionIndexText: { color: Colors.orange, fontFamily: Fonts.bodySemiBold, fontWeight: '800', fontSize: 13 },
+  sectionTitle: { fontSize: 16, fontFamily: Fonts.bodySemiBold, fontWeight: '800', color: Colors.text },
+  sectionSubtitle: { fontSize: 12, fontFamily: Fonts.body, color: Colors.sub, marginTop: 2, lineHeight: 17 },
+  fieldWrap: { gap: 6 },
+  fieldLabel: { fontSize: 11, fontFamily: Fonts.bodySemiBold, fontWeight: '700', color: Colors.sub, letterSpacing: 0.4 },
+  fieldLabelFocused: { color: Colors.orange },
+  fieldBox: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surface,
+    borderWidth: 1.5, borderColor: Colors.border2, borderRadius: 12, paddingHorizontal: 12,
+  },
+  fieldBoxFocused: { borderColor: Colors.orange, shadowColor: Colors.orange, shadowOpacity: 0.25, shadowRadius: 8, elevation: 3 },
+  fieldBoxArea: { alignItems: 'flex-start', paddingVertical: 4 },
+  fieldIcon: { marginRight: 8 },
+  fieldInput: { flex: 1, color: Colors.text, fontSize: 15, fontFamily: Fonts.body, paddingVertical: 12 },
+  fieldInputArea: { minHeight: 88, textAlignVertical: 'top', paddingTop: 10 },
+  fieldCounter: { fontSize: 11, color: Colors.dim, textAlign: 'right', fontFamily: Fonts.body },
   selectField: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.surface, borderWidth: 1.5, borderColor: Colors.border2, borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 14,
   },
-  selectValue: { color: Colors.text, fontSize: 15, fontWeight: '600', flex: 1, paddingRight: 12 },
-  selectChevron: { color: Colors.sub, fontSize: 12, fontWeight: '700' },
-  mediaRow: { flexDirection: 'row', gap: 12, marginTop: 4 },
-  mediaCard: {
+  selectValue: { color: Colors.text, fontSize: 15, fontFamily: Fonts.bodySemiBold, flex: 1 },
+  selectChevron: { color: Colors.sub, fontSize: 14 },
+  brandingRow: { flexDirection: 'column', gap: 16 },
+  brandingRowWide: { flexDirection: 'row', alignItems: 'flex-start' },
+  avatarCol: { alignItems: 'center', gap: 8, minWidth: 120 },
+  bannerCol: { flex: 1, gap: 8 },
+  mediaLabel: { fontSize: 11, fontFamily: Fonts.bodySemiBold, color: Colors.sub, fontWeight: '700', alignSelf: 'flex-start' },
+  avatarPicker: {
+    width: 108, height: 108, borderRadius: 20, overflow: 'hidden', position: 'relative',
+    borderWidth: 2, borderColor: Colors.border2, backgroundColor: Colors.surface,
+  },
+  avatarImage: { width: '100%', height: '100%' },
+  avatarPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  avatarEmoji: { fontSize: 36 },
+  avatarHint: { fontSize: 10, color: Colors.dim, fontFamily: Fonts.body },
+  avatarCamera: {
+    position: 'absolute', bottom: 6, right: 6, width: 32, height: 32, borderRadius: 16,
+    backgroundColor: Colors.orange, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: Colors.card,
+  },
+  bannerPicker: {
+    aspectRatio: 16 / 6, borderRadius: 16, overflow: 'hidden', position: 'relative',
+    borderWidth: 2, borderStyle: 'dashed', borderColor: Colors.border2, backgroundColor: Colors.surface,
+    minHeight: 100,
+  },
+  bannerImage: { width: '100%', height: '100%', position: 'absolute' },
+  bannerOverlay: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: '#00000055',
+    alignItems: 'center', justifyContent: 'center', opacity: 0.85,
+  },
+  bannerOverlayText: { color: Colors.white, fontSize: 12, fontFamily: Fonts.bodySemiBold, fontWeight: '700' },
+  bannerEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, padding: 16 },
+  bannerEmptyTitle: { color: Colors.text, fontSize: 14, fontFamily: Fonts.bodySemiBold, fontWeight: '700' },
+  bannerEmptyHint: { color: Colors.dim, fontSize: 11, fontFamily: Fonts.body },
+  bannerLoading: { ...StyleSheet.absoluteFillObject, backgroundColor: '#00000066', alignItems: 'center', justifyContent: 'center' },
+  igIcon: { fontSize: 16 },
+  timeRow: { flexDirection: 'row', gap: 12 },
+  timeCol: { flex: 1, gap: 6 },
+  timePill: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.surface, borderWidth: 1.5, borderColor: Colors.border2, borderRadius: 999,
+    paddingHorizontal: 16, paddingVertical: 12,
+  },
+  timePillValue: { color: Colors.text, fontSize: 15, fontFamily: Fonts.bodySemiBold, fontWeight: '700' },
+  timePillAction: { color: Colors.orange, fontSize: 12, fontFamily: Fonts.bodySemiBold, fontWeight: '700' },
+  segmentRow: { flexDirection: 'row', gap: 10 },
+  segmentCard: {
+    flex: 1, backgroundColor: Colors.surface, borderWidth: 1.5, borderColor: Colors.border2,
+    borderRadius: 14, padding: 14, alignItems: 'center', gap: 4,
+  },
+  segmentCardActive: { borderColor: Colors.orange, backgroundColor: hexAlpha(Colors.orange, '12') },
+  segmentIcon: { fontSize: 24 },
+  segmentTitle: { fontSize: 13, fontFamily: Fonts.bodySemiBold, fontWeight: '700', color: Colors.sub },
+  segmentTitleActive: { color: Colors.orange },
+  segmentHint: { fontSize: 11, color: Colors.dim, fontFamily: Fonts.body },
+  detectBtn: {
+    backgroundColor: Colors.orange, borderRadius: 12, minHeight: 44, alignItems: 'center',
+    justifyContent: 'center', paddingHorizontal: 16, marginTop: 4,
+  },
+  detectBtnText: { color: Colors.white, fontFamily: Fonts.bodySemiBold, fontWeight: '800', fontSize: 14 },
+  manualBlock: { gap: 8 },
+  mapPreview: {
+    marginTop: 8, borderRadius: 16, overflow: 'hidden', minHeight: 160,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border2, position: 'relative',
+  },
+  mapGrid: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: hexAlpha(Colors.blue, '08'),
+    borderWidth: 1, borderColor: hexAlpha(Colors.border2, '88'),
+  },
+  mapPin: { position: 'absolute', top: '38%', left: '46%' },
+  mapPinText: { fontSize: 28 },
+  mapBadges: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12, gap: 6 },
+  mapBadge: {
+    backgroundColor: hexAlpha('#000000', 'AA'), borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'flex-start',
+  },
+  mapBadgeText: { color: Colors.white, fontSize: 11, fontFamily: Fonts.bodySemiBold, fontWeight: '600' },
+  footerHint: { color: Colors.dim, fontSize: 12, fontFamily: Fonts.body, lineHeight: 18, textAlign: 'center', paddingHorizontal: 8 },
+  modalBackdrop: { flex: 1, backgroundColor: '#000000AA', justifyContent: 'center', padding: 20 },
+  modalCard: {
+    backgroundColor: Colors.surface, borderRadius: 20, borderWidth: 1, borderColor: Colors.border2, padding: 18,
+  },
+  timeModalCard: { backgroundColor: Colors.surface, borderRadius: 20, borderWidth: 1, borderColor: Colors.border2, padding: 18, gap: 16 },
+  modalTitle: { color: Colors.text, fontSize: 18, fontFamily: Fonts.bodySemiBold, fontWeight: '800', marginBottom: 12 },
+  modalOption: {
+    paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12, marginBottom: 8,
+    backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border2,
+  },
+  modalOptionActive: { borderColor: Colors.orange, backgroundColor: hexAlpha(Colors.orange, '18') },
+  modalOptionText: { color: Colors.text, fontSize: 14, fontFamily: Fonts.bodySemiBold },
+  cropBackdrop: {
     flex: 1,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 16,
-    padding: 12,
-    alignItems: 'center',
-    minHeight: 180,
-    justifyContent: 'center',
-  },
-  mediaImage: { width: '100%', height: 92, borderRadius: 12, marginBottom: 12 },
-  mediaEmoji: { fontSize: 40, marginBottom: 12 },
-  mediaTitle: { color: Colors.text, fontSize: 14, fontWeight: '800', textAlign: 'center', marginBottom: 6 },
-  mediaHint: { color: Colors.sub, fontSize: 12, textAlign: 'center', lineHeight: 17 },
-  row: { flexDirection: 'row', gap: 12 },
-  col: { flex: 1 },
-  webTimeWrap: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  timeButton: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  timeValue: { color: Colors.text, fontSize: 15, fontWeight: '700' },
-  timeAction: { color: Colors.orange, fontSize: 12, fontWeight: '700' },
-  methodRow: { flexDirection: 'row', gap: 12, marginTop: 4 },
-  methodCard: {
-    flex: 1,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 16,
-    padding: 14,
-  },
-  methodCardActive: { borderColor: Colors.orange, backgroundColor: Colors.orange + '10' },
-  methodIcon: { fontSize: 28, marginBottom: 10 },
-  methodTitle: { color: Colors.text, fontSize: 14, fontWeight: '800', marginBottom: 4 },
-  methodText: { color: Colors.sub, fontSize: 12, lineHeight: 18 },
-  locationCard: {
-    marginTop: 12,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 16,
-    padding: 14,
-  },
-  locationTitle: { color: Colors.text, fontSize: 14, fontWeight: '800', marginBottom: 6 },
-  locationHint: { color: Colors.sub, fontSize: 12, lineHeight: 18, marginBottom: 12 },
-  primaryAction: {
-    marginTop: 12,
-    backgroundColor: Colors.orange,
-    borderRadius: 12,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-  },
-  primaryActionText: { color: Colors.white, fontWeight: '800', fontSize: 14 },
-  infoCard: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    borderRadius: 16,
-    padding: 14,
-    marginTop: 12,
-    gap: 4,
-  },
-  infoTitle: { color: Colors.text, fontSize: 14, fontWeight: '800', marginBottom: 2 },
-  infoText: { color: Colors.sub, fontSize: 13, lineHeight: 18 },
-  hint: { marginTop: 16, color: Colors.dim, fontSize: 12, lineHeight: 18 },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: '#0008',
+    backgroundColor: '#000000CC',
     justifyContent: 'center',
     padding: 20,
   },
-  modalCard: {
-    maxHeight: '75%',
+  cropCard: {
     backgroundColor: Colors.surface,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: Colors.border2,
     padding: 18,
+    gap: 12,
   },
-  timeModalCard: {
-    backgroundColor: Colors.surface,
+  cropAvatar: {
+    width: 180,
+    height: 180,
     borderRadius: 20,
-    borderWidth: 1,
-    borderColor: Colors.border2,
-    padding: 18,
-    gap: 16,
-  },
-  modalTitle: { color: Colors.text, fontSize: 18, fontWeight: '800', marginBottom: 12 },
-  modalOption: {
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    marginBottom: 8,
+    alignSelf: 'center',
     backgroundColor: Colors.card,
+  },
+  cropBanner: {
+    width: '100%',
+    aspectRatio: 16 / 6,
+    borderRadius: 14,
+    backgroundColor: Colors.card,
+  },
+  cropHint: {
+    color: Colors.dim,
+    fontSize: 12,
+    fontFamily: Fonts.body,
+    textAlign: 'center',
+  },
+  cropActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  cropSecondary: {
+    flex: 1,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: Colors.border2,
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: Colors.card,
   },
-  modalOptionActive: { borderColor: Colors.orange, backgroundColor: Colors.orange + '18' },
-  modalOptionText: { color: Colors.text, fontSize: 14, fontWeight: '600' },
+  cropSecondaryText: {
+    color: Colors.sub,
+    fontWeight: '700',
+    fontFamily: Fonts.bodySemiBold,
+  },
+  cropPrimary: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: Colors.orange,
+  },
+  cropPrimaryText: {
+    color: Colors.white,
+    fontWeight: '800',
+    fontFamily: Fonts.bodySemiBold,
+  },
 });

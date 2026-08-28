@@ -1,11 +1,12 @@
 // app/(tabs)/cart.tsx — Buyer shopping cart
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, ActivityIndicator,
-  Alert, StyleSheet, Image,
+  Alert, StyleSheet, Image, ScrollView,
 } from 'react-native';
 import { useAuthStore } from '../../stores/authStore';
 import { useCartStore } from '../../stores/cartStore';
+import { useScreenRefresh } from '../../hooks/useScreenRefresh';
 import { Colors } from '../../constants/theme';
 
 export default function CartScreen() {
@@ -16,6 +17,12 @@ export default function CartScreen() {
   useEffect(() => {
     if (profile?.id) loadCart(profile.id);
   }, [profile?.id]);
+
+  const refreshCart = useCallback(async () => {
+    if (profile?.id) await loadCart(profile.id);
+  }, [profile?.id, loadCart]);
+
+  const { refreshControl, scrollHandlers } = useScreenRefresh(refreshCart);
 
   const checkout = () => {
     if (items.length === 0) return;
@@ -54,15 +61,21 @@ export default function CartScreen() {
       </View>
 
       {items.length === 0 ? (
-        <View style={s.center}>
+        <ScrollView
+          contentContainerStyle={s.center}
+          refreshControl={refreshControl}
+          {...scrollHandlers}
+        >
           <Text style={s.emptyEmoji}>🛍️</Text>
           <Text style={s.emptyText}>Your cart is empty. Follow shops and add products from the feed or shop pages.</Text>
-        </View>
+        </ScrollView>
       ) : (
         <>
           <FlatList
             data={items}
             keyExtractor={item => item.id}
+            refreshControl={refreshControl}
+            {...scrollHandlers}
             contentContainerStyle={{ padding: 16, paddingBottom: 120, gap: 12 }}
             renderItem={({ item }) => {
               const price = Number(item.product?.discounted_price ?? item.product?.price ?? 0);

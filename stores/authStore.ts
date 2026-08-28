@@ -2,6 +2,9 @@
 
 import { create } from 'zustand';
 import { getAuthSession, getSupabase, isDemoAuthEnabled, signOut as authSignOut } from '../lib/supabase';
+import { useSparkInteractionsStore } from './sparkInteractionsStore';
+import { usePostInteractionsStore } from './postInteractionsStore';
+import { useProfileMediaStore } from './profileMediaStore';
 import {
   getProfile,
   getFollowedShopIds,
@@ -23,6 +26,7 @@ interface AuthStore {
   initialize: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   updateProfile: (updates: Partial<Profile>) => void;
+  applyLocationSetup: (updates: Partial<Profile>) => void;
   loadFollows: (userId: string) => Promise<void>;
   toggleFollowedShop: (shopId: string, shopName?: string) => Promise<void>;
   loadNotifications: (userId: string) => Promise<void>;
@@ -148,6 +152,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }));
   },
 
+  applyLocationSetup: (updates) => {
+    set(state => ({
+      profile: state.profile
+        ? { ...state.profile, ...updates }
+        : ({ ...updates } as Profile),
+    }));
+  },
+
   loadFollows: async (userId) => {
     if (isDemoAuthEnabled()) return;
     const ids = await getFollowedShopIds(userId);
@@ -209,6 +221,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     } catch (e) {
       console.error('Sign out failed', e);
     } finally {
+      useSparkInteractionsStore.getState().reset();
+      usePostInteractionsStore.getState().reset();
+      useProfileMediaStore.getState().reset();
       set({
         profile: null,
         followedShopIds: [],
