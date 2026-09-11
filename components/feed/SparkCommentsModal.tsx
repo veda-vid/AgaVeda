@@ -3,7 +3,7 @@ import {
   View, Text, Modal, Pressable, TextInput, TouchableOpacity,
   FlatList, ActivityIndicator, StyleSheet, KeyboardAvoidingView, Platform,
 } from 'react-native';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import { createSparkComment, getSparkComments } from '../../lib/api';
 import { useSparkInteractionsStore } from '../../stores/sparkInteractionsStore';
 import type { SparkComment } from '../../types';
@@ -128,7 +128,7 @@ export function SparkCommentsModal({
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   backdrop: { flex: 1, backgroundColor: '#000A', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: Colors.surface,
@@ -191,4 +191,4 @@ const s = StyleSheet.create({
   },
   postBtnDisabled: { opacity: 0.45 },
   postBtnText: { color: Colors.white, fontWeight: '800', fontSize: 13 },
-});
+}));

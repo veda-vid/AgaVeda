@@ -4,7 +4,7 @@ import {
   ActivityIndicator, ScrollView, Platform,
 } from 'react-native';
 import * as Location from 'expo-location';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import { reverseGeocodeLocation, searchLocations, type LocationSuggestion } from '../../lib/locationSearch';
 
 const SLATE_800 = '#1E293B';
@@ -241,7 +241,7 @@ export function SparkLocationPicker({
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   wrap: {
     marginBottom: 12,
     zIndex: 20,
@@ -339,4 +339,4 @@ const s = StyleSheet.create({
     fontFamily: Fonts.bodyMedium,
     lineHeight: 19,
   },
-});
+}));

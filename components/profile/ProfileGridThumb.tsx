@@ -1,5 +1,5 @@
 import { View, Text, Image, StyleSheet, Platform } from 'react-native';
-import { Colors } from '../../constants/theme';
+import { Colors, createDynamicStyles } from '../../constants/theme';
 import { isProfileVideoItem } from '../../lib/profileMedia';
 import type { Post } from '../../types';
 import { parseTextCardCaption } from '../feed/feedUtils';
@@ -64,7 +64,7 @@ export function ProfileGridThumb({ post, style, imageStyle }: Props) {
   return <Image source={{ uri }} style={[st.image, imageStyle, style]} resizeMode="cover" />;
 }
 
-const st = StyleSheet.create({
+const st = createDynamicStyles((Colors) => ({
   image: { width: '100%', height: '100%' },
   fallback: {
     width: '100%',
@@ -104,4 +104,4 @@ const st = StyleSheet.create({
     paddingVertical: 10,
   },
   textCardText: { textAlign: 'center', fontWeight: '700', fontSize: 12 },
-});
+}));

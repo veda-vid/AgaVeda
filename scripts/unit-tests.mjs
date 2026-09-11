@@ -76,7 +76,7 @@ function canChangeRadius(role) {
 
 describe('location helpers', () => {
   it('defaults radius option includes 5 km', () => {
-    const RADIUS_OPTIONS = [2, 5, 10, 20, 50];
+    const RADIUS_OPTIONS = [2, 5, 10, 25, 50];
     assert.equal(RADIUS_OPTIONS.includes(5), true);
     assert.equal(RADIUS_OPTIONS[1], 5);
   });

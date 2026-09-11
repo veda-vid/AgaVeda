@@ -9,7 +9,7 @@ import { useAuthStore } from '../../stores/authStore';
 import {
   getShopById, getOrCreateShopConversation, getShopMessages, sendShopMessage,
 } from '../../lib/api';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import type { ShopMessage } from '../../types';
 
 export default function ShopChatScreen() {
@@ -143,7 +143,7 @@ export default function ShopChatScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   flex: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
@@ -213,4 +213,4 @@ const s = StyleSheet.create({
   },
   sendBtnDisabled: { opacity: 0.5 },
   sendText: { color: Colors.white, fontWeight: '800', fontSize: 13 },
-});
+}));

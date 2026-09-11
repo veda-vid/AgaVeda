@@ -1,10 +1,13 @@
 // app/(tabs)/_layout.tsx — Bottom tab navigator (buyer vs seller)
+
 import { Tabs } from 'expo-router';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path } from 'react-native-svg';
-import { Colors } from '../../constants/theme';
+import { Colors, createDynamicStyles } from '../../constants/theme';
 import { useAuthStore } from '../../stores/authStore';
 import { useCartStore } from '../../stores/cartStore';
+import { isSellerLike } from '../../stores/roleUtils';
 
 function TabIcon({
   icon,
@@ -83,23 +86,30 @@ function TabIcon({
 export default function TabsLayout() {
   const { profile } = useAuthStore();
   const cartCount = useCartStore(state => state.items.reduce((n, i) => n + i.quantity, 0));
-  const isSeller = profile?.role === 'seller' || profile?.role === 'service_provider';
+  const isSellerLikeRole = isSellerLike(profile?.role);
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 10);
+  const tabBarHeight = 58 + bottomPad;
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarStyle: s.tabBar,
+        tabBarStyle: [s.tabBar, { height: tabBarHeight, paddingBottom: bottomPad }],
         tabBarShowLabel: false,
       }}>
       <Tabs.Screen
         name="index"
         options={{ tabBarIcon: ({ focused }) => <TabIcon icon="home" focused={focused} /> }}
       />
+      {/* Daily / City Veda — always in the tab bar for buyer, seller, and service_provider (never role-gated). */}
       <Tabs.Screen
-        name="news"
-        options={{ tabBarIcon: ({ focused }) => <TabIcon icon="news" focused={focused} /> }}
+        name="daily"
+        options={{
+          tabBarIcon: ({ focused }) => <TabIcon icon="news" focused={focused} />,
+        }}
       />
+      <Tabs.Screen name="news" options={{ href: null }} />
       <Tabs.Screen
         name="shops"
         options={{ tabBarIcon: ({ focused }) => <TabIcon icon="shops" focused={focused} /> }}
@@ -111,12 +121,13 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="cart"
         options={
-          isSeller
+          isSellerLikeRole
             ? { href: null }
             : { tabBarIcon: ({ focused }) => <TabIcon icon="cart" focused={focused} badge={cartCount} /> }
         }
       />
       <Tabs.Screen name="deals" options={{ href: null }} />
+      <Tabs.Screen name="notifications" options={{ href: null }} />
       <Tabs.Screen
         name="services"
         options={{ tabBarIcon: ({ focused }) => <TabIcon icon="services" focused={focused} /> }}
@@ -129,13 +140,11 @@ export default function TabsLayout() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   tabBar: {
     backgroundColor: Colors.surface,
     borderTopColor: Colors.border,
     borderTopWidth: 1,
-    height: 68,
-    paddingBottom: 10,
     paddingTop: 4,
   },
   tabItem: { alignItems: 'center', gap: 2 },
@@ -152,4 +161,4 @@ const s = StyleSheet.create({
     shadowColor: Colors.orange, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 10, elevation: 8,
   },
   uploadIcon: { fontSize: 26, color: Colors.white, fontWeight: '700' },
-});
+}));

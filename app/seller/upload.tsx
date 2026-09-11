@@ -7,8 +7,9 @@ import {
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
-import { createProduct, createPost, uploadImage, getShopByOwner, updateShop, updateProfile as updateUserProfile } from '../../lib/api';
-import { Colors, SHOP_CATEGORIES } from '../../constants/theme';
+import { createProduct, createPost, uploadMediaFromUri, getShopByOwner, updateShop, updateProfile as updateUserProfile } from '../../lib/api';
+import { agentDebugLog } from '../../lib/agentDebugLog';
+import { Colors, SHOP_CATEGORIES, createDynamicStyles } from '../../constants/theme';
 
 type MediaItem = { uri: string; type: 'image' | 'video' };
 
@@ -113,7 +114,17 @@ export default function UploadScreen() {
     setUploading(true);
     try {
       // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H2',location:'app/seller/upload.tsx:handlePost:start',message:'seller upload started',data:{role:profile.role,lat:profile.lat ?? null,lng:profile.lng ?? null,radius_km:profile.radius_km ?? null},timestamp:Date.now()})}).catch(()=>{});
+      agentDebugLog({
+        hypothesisId: 'H12',
+        location: 'upload.tsx:handlePost:start',
+        message: 'seller product upload started',
+        data: {
+          role: profile.role,
+          mediaCount: mediaItems.length,
+          hasTitle: !!title.trim(),
+        },
+        runId: 'publish-debug',
+      });
       // #endregion
       // RLS requires profiles.role to be 'seller' (or super_admin) for shops INSERT.
       if (profile.role !== 'seller' && profile.role !== 'super_admin') {
@@ -146,12 +157,10 @@ export default function UploadScreen() {
       const uploadedUrls: string[] = [];
       for (let i = 0; i < mediaItems.length; i++) {
         const item = mediaItems[i];
-        const response = await fetch(item.uri);
-        const blob = await response.blob();
         const extension = item.type === 'video' ? 'mp4' : 'jpg';
         const path = `products/${profile.id}/${Date.now()}_${i}.${extension}`;
         const contentType = item.type === 'video' ? 'video/mp4' : 'image/jpeg';
-        const url = await uploadImage('cityconnect', path, blob, contentType);
+        const url = await uploadMediaFromUri(item.uri, path, contentType);
         uploadedUrls.push(url);
       }
 
@@ -184,7 +193,18 @@ export default function UploadScreen() {
         media_type: mediaItems[0]?.type ?? 'image',
       });
       // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H3',location:'app/seller/upload.tsx:handlePost:afterCreatePost',message:'post created (seller upload)',data:{shopId:myShop.id,productId:product.id,postId:createdPost?.id ?? null,createdAt:createdPost?.created_at ?? null,captionLen:captionText.length,mediaCount:uploadedUrls.length},timestamp:Date.now()})}).catch(()=>{});
+      agentDebugLog({
+        hypothesisId: 'H12',
+        location: 'upload.tsx:handlePost:success',
+        message: 'seller product post created',
+        data: {
+          shopId: myShop.id,
+          productId: product.id,
+          postId: createdPost?.id ?? null,
+          mediaCount: uploadedUrls.length,
+        },
+        runId: 'publish-debug',
+      });
       // #endregion
 
       // After a successful upload, always take the seller back to the home feed.
@@ -194,13 +214,17 @@ export default function UploadScreen() {
       } else {
         Alert.alert('🎉 Posted!', 'Your product is now live on the home feed.');
       }
-      // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H1',location:'app/seller/upload.tsx:handlePost:navigateTabs',message:'navigating to home feed after post',data:{wasSellerRole:profile.role,hasShop:true},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      router.replace({ pathname: '/(tabs)', params: { refresh_feed: '1' } } as any);
+      // Soft navigate home — avoid nested replace races that can flash a blank/black screen
+      router.replace('/(tabs)/' as any);
     } catch (e: any) {
       // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'upload-debug',hypothesisId:'H3',location:'app/seller/upload.tsx:handlePost:catch',message:'seller upload failed',data:{errorMessage:e?.message ?? String(e),role:profile?.role ?? null},timestamp:Date.now()})}).catch(()=>{});
+      agentDebugLog({
+        hypothesisId: 'H12',
+        location: 'upload.tsx:handlePost:error',
+        message: 'seller product upload failed',
+        data: { errorMessage: e?.message ?? String(e), role: profile?.role ?? null },
+        runId: 'publish-debug',
+      });
       // #endregion
       showMessage('Error', e?.message || 'Failed to post product');
     } finally { setUploading(false); }
@@ -341,7 +365,7 @@ export default function UploadScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 52, paddingHorizontal: 20, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: Colors.border },
   backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center' },
@@ -375,4 +399,4 @@ const s = StyleSheet.create({
   previewDesc: { fontSize: 13, color: Colors.sub },
   tagChip: { borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: Colors.border2, alignItems: 'center' },
   tagChipText: { color: Colors.text, fontWeight: '700', fontSize: 12 },
-});
+}));

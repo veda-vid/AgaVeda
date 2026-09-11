@@ -1,20 +1,23 @@
-import { Platform, Vibration } from 'react-native';
+// lib/haptics.ts — Light haptic feedback (native) with web no-op
 
-/** Light tactile feedback for outreach actions (no extra dependency). */
-export function hapticLight() {
+import { Platform } from 'react-native';
+
+export async function hapticLight() {
   if (Platform.OS === 'web') return;
   try {
-    Vibration.vibrate(10);
+    const Haptics = await import('expo-haptics');
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   } catch {
-    // ignore
+    // Optional — Expo Go / emulator may lack haptic hardware
   }
 }
 
-export function hapticSuccess() {
+export async function hapticSuccess() {
   if (Platform.OS === 'web') return;
   try {
-    Vibration.vibrate([0, 12, 40, 12]);
+    const Haptics = await import('expo-haptics');
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   } catch {
-    // ignore
+    // Optional — ignore on unsupported devices
   }
 }

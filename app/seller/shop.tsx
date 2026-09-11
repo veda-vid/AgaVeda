@@ -15,7 +15,7 @@ import {
   updateProfile as updateUserProfile, uploadImage,
 } from '../../lib/api';
 import { getSupabase, isDemoAuthEnabled } from '../../lib/supabase';
-import { Colors, Fonts, SHOP_CATEGORIES, Shadow } from '../../constants/theme';
+import { Colors, Fonts, SHOP_CATEGORIES, Shadow, createDynamicStyles } from '../../constants/theme';
 import { getShopHoursState } from '../../lib/marketplaceUtils';
 import {
   parseOperatingHours, scheduleToLegacyTimes, defaultWeeklySchedule, getWeekdayKey,
@@ -730,7 +730,7 @@ export default function SellerShopScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   center: { alignItems: 'center', justifyContent: 'center' },
   safeTop: { backgroundColor: Colors.bg, borderBottomWidth: 1, borderBottomColor: Colors.border, ...Shadow.sm },
@@ -937,4 +937,4 @@ const s = StyleSheet.create({
     fontWeight: '800',
     fontFamily: Fonts.bodySemiBold,
   },
-});
+}));

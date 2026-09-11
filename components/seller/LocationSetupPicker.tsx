@@ -5,7 +5,7 @@ import {
   TextInput, Animated, LayoutChangeEvent, PanResponder, Image,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 
 const WebIframe = 'iframe' as any;
 const RADIUS_MIN = 5;
@@ -365,7 +365,7 @@ export function LocationSetupPicker({
   );
 }
 
-const loc = StyleSheet.create({
+const loc = createDynamicStyles((Colors) => ({
   root: { gap: 16 },
   segmentRow: { flexDirection: 'row', gap: 10 },
   segmentCard: {
@@ -499,4 +499,4 @@ const loc = StyleSheet.create({
   metaPillAccent: { borderColor: hexAlpha(Colors.orange, '44'), backgroundColor: hexAlpha(Colors.orange, '12') },
   metaPillText: { fontSize: 11, color: Colors.text, fontWeight: '600' },
   metaPillTextAccent: { color: Colors.orange, fontWeight: '800' },
-});
+}));

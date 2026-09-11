@@ -44,6 +44,8 @@ type PostInteractionsStore = {
   toggleLike: (postId: string, userId: string) => Promise<void>;
   toggleSave: (postId: string, userId: string) => Promise<void>;
   toggleRepost: (postId: string, userId: string, shopId: string) => Promise<void>;
+  quoteRepost: (postId: string, userId: string, shopId: string, quote: string) => Promise<void>;
+  unrepost: (postId: string, userId: string) => Promise<void>;
   bumpCommentCount: (postId: string, delta?: number) => void;
   addCommentOptimistic: (postId: string, delta?: number) => void;
   reset: () => void;
@@ -209,6 +211,68 @@ export const usePostInteractionsStore = create<PostInteractionsStore>((set, get)
         version: state.version + 1,
       }));
       throw new Error('Could not update repost');
+    } finally {
+      set(state => {
+        const inFlight = { ...state.inFlightIds };
+        delete inFlight[postId];
+        return { inFlightIds: inFlight };
+      });
+    }
+  },
+
+  quoteRepost: async (postId, userId, shopId, quote) => {
+    const current = get().getInteraction(postId);
+    const already = current.isReposted;
+    const nextCount = already ? current.repostCount : current.repostCount + 1;
+    set(state => ({
+      byId: {
+        ...state.byId,
+        [postId]: { ...current, isReposted: true, repostCount: nextCount },
+      },
+      dirtyIds: { ...state.dirtyIds, [postId]: true },
+      inFlightIds: { ...state.inFlightIds, [postId]: true },
+      version: state.version + 1,
+    }));
+    try {
+      await repostPost(userId, postId, shopId, quote);
+      useProfileMediaStore.getState().invalidateUserReposts();
+    } catch {
+      set(state => ({
+        byId: { ...state.byId, [postId]: current },
+        version: state.version + 1,
+      }));
+      throw new Error('Could not quote repost');
+    } finally {
+      set(state => {
+        const inFlight = { ...state.inFlightIds };
+        delete inFlight[postId];
+        return { inFlightIds: inFlight };
+      });
+    }
+  },
+
+  unrepost: async (postId, userId) => {
+    const current = get().getInteraction(postId);
+    if (!current.isReposted) return;
+    const nextCount = Math.max(0, current.repostCount - 1);
+    set(state => ({
+      byId: {
+        ...state.byId,
+        [postId]: { ...current, isReposted: false, repostCount: nextCount },
+      },
+      dirtyIds: { ...state.dirtyIds, [postId]: true },
+      inFlightIds: { ...state.inFlightIds, [postId]: true },
+      version: state.version + 1,
+    }));
+    try {
+      await unrepostPost(userId, postId);
+      useProfileMediaStore.getState().invalidateUserReposts();
+    } catch {
+      set(state => ({
+        byId: { ...state.byId, [postId]: current },
+        version: state.version + 1,
+      }));
+      throw new Error('Could not undo repost');
     } finally {
       set(state => {
         const inFlight = { ...state.inFlightIds };

@@ -4,7 +4,7 @@ import {
   ActivityIndicator, Alert,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 
 export type CapturedMedia = {
   uri: string;
@@ -107,10 +107,12 @@ export function CameraCapture({ visible, mode, onClose, onCapture }: CameraCaptu
             mediaTypes: mode === 'video'
               ? ImagePicker.MediaTypeOptions.Videos
               : ImagePicker.MediaTypeOptions.Images,
-            quality: 0.85,
+            quality: 0.7,
             allowsEditing: true,
             aspect: mode === 'photo' ? [1, 1] : [9, 16],
             videoMaxDuration: 60,
+            videoExportPreset: ImagePicker.VideoExportPreset.H264_1280x720,
+            videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
           });
           if (!result.canceled && result.assets[0]) {
             const asset = result.assets[0];
@@ -247,7 +249,7 @@ export function CameraCapture({ visible, mode, onClose, onCapture }: CameraCaptu
           <TouchableOpacity onPress={() => { stopStream(); onClose(); }} hitSlop={12}>
             <Text style={s.closeText}>✕</Text>
           </TouchableOpacity>
-          <Text style={s.topTitle}>{mode === 'video' ? 'Record Spark' : 'Take Photo'}</Text>
+          <Text style={s.topTitle}>{mode === 'video' ? 'Record Moment' : 'Take Photo'}</Text>
           <TouchableOpacity onPress={toggleFlash} hitSlop={12}>
             <Text style={s.toolText}>{flashOn ? 'Flash On' : 'Flash'}</Text>
           </TouchableOpacity>
@@ -325,7 +327,7 @@ export function CameraCapture({ visible, mode, onClose, onCapture }: CameraCaptu
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.black },
   topBar: {
     flexDirection: 'row',
@@ -432,4 +434,4 @@ const s = StyleSheet.create({
   },
   nativeLaunchText: { color: Colors.white, fontSize: 14 },
   closeBtn: { marginTop: 16, padding: 12 },
-});
+}));

@@ -20,6 +20,7 @@ export const POPULAR_CITIES: CityOption[] = [
   { name: 'Jaipur', lat: 26.9124, lng: 75.7873, state: 'Rajasthan' },
   { name: 'Lucknow', lat: 26.8467, lng: 80.9462, state: 'Uttar Pradesh' },
   { name: 'Noida', lat: 28.5355, lng: 77.391, state: 'Uttar Pradesh' },
+  { name: 'Rishikesh', lat: 30.0869, lng: 78.2676, state: 'Uttarakhand' },
 ];
 
 /** Find closest popular city within ~80km, or match by name */

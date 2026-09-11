@@ -1,16 +1,17 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, Dimensions, StyleSheet, TouchableOpacity, Pressable,
-  Share, Platform, Modal, Alert, Image, ActivityIndicator, type ViewToken, type LayoutChangeEvent,
+  Platform, Modal, Alert, Image, ActivityIndicator, type ViewToken, type LayoutChangeEvent,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FlashList } from '@shopify/flash-list';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import type { Reel } from '../../types';
 import { useAuthStore } from '../../stores/authStore';
 import { useCartStore } from '../../stores/cartStore';
 import { useSparkInteractionsStore } from '../../stores/sparkInteractionsStore';
 import { useFeedMediaStore } from '../../stores/feedMediaStore';
-import { createBuyerEnquiry } from '../../lib/api';
+import { createBuyerEnquiry, softDeleteMoment } from '../../lib/api';
 import { hapticLight } from '../../lib/haptics';
 import { FeedVideo } from './FeedVideo';
 import { SparkCommentsModal } from './SparkCommentsModal';
@@ -18,7 +19,11 @@ import {
   IconComment, IconFollowPlus, IconHeart, IconMore, IconMute, IconMusic,
   IconRepost, IconShare, IconVolume,
 } from './FeedIcons';
-import { resolveFeedMediaUrl, shopFeedHandle } from './feedUtils';
+import { resolveFeedMediaUrl, shopFeedHandle, isVideoMedia } from './feedUtils';
+import { DoubleTapLikeArea } from './DoubleTapLikeArea';
+import { useMuteBadgeFlash } from '../sparks/MuteTapOverlay';
+import { ShareRepostSheet } from '../common/ShareRepostSheet';
+import { GlassSurface } from '../ui/modernSurfaces';
 
 const { width: SCREEN_W, height: WINDOW_H } = Dimensions.get('window');
 const CAPTION_LIMIT = 90;
@@ -28,11 +33,25 @@ export type SparkItem = Reel & {
   is_liked?: boolean;
   is_reposted?: boolean;
   is_following?: boolean;
+  quote_caption?: string | null;
 };
 
 type SparksFeedProps = {
   sparks: SparkItem[];
   preloadRadius?: number;
+  /** Force full-window page height (Instagram Reels immersive mode). */
+  immersive?: boolean;
+  /** Optional fixed page height; defaults to window height when immersive. */
+  pageHeightOverride?: number;
+  /** Called when user taps the immersive back control (immersive only). */
+  onRequestClose?: () => void;
+  /** Hide the built-in immersive back button when a parent overlays one. */
+  hideBackButton?: boolean;
+  /** Seller/pro create entry inside immersive Sparks (FAB). */
+  canCreate?: boolean;
+  onCreateSpark?: () => void;
+  /** Called after the current user soft-deletes their own Moment. */
+  onDeleted?: (sparkId: string) => void;
 };
 
 function SparkCaption({ text }: { text?: string | null }) {
@@ -100,6 +119,8 @@ const SparkCard = memo(function SparkCard({
   reposted,
   following,
   muted,
+  immersive,
+  bottomInset,
   onToggleMute,
   onLike,
   onDoubleTapLike,
@@ -110,6 +131,7 @@ const SparkCard = memo(function SparkCard({
   onMore,
   onBuy,
   onChat,
+  quoteCaption,
 }: {
   spark: SparkItem;
   active: boolean;
@@ -122,6 +144,9 @@ const SparkCard = memo(function SparkCard({
   reposted: boolean;
   following: boolean;
   muted: boolean;
+  immersive?: boolean;
+  bottomInset?: number;
+  quoteCaption?: string | null;
   onToggleMute: () => void;
   onLike: () => void;
   onDoubleTapLike: () => void;
@@ -133,25 +158,26 @@ const SparkCard = memo(function SparkCard({
   onBuy: () => void;
   onChat: () => void;
 }) {
-  const uri = resolveFeedMediaUrl(spark.media_url);
-  const logo = resolveFeedMediaUrl(spark.shop_logo);
-  const handle = shopFeedHandle(spark.shop_name);
-  const lastTap = useRef(0);
+  const uri = resolveFeedMediaUrl(spark?.media_url);
+  const logo = resolveFeedMediaUrl(spark?.shop_logo);
+  const musicTrackUrl =
+    ((spark as SparkItem & { music_track_url?: string | null })?.music_track_url)
+    ?? spark?.audio_url
+    ?? null;
+  const hasLatchedMusic = !!musicTrackUrl;
+  const videoVolumePct = hasLatchedMusic
+    ? (spark?.audio_volume_balance?.video ?? 0)
+    : 100;
+  const musicVolumePct = hasLatchedMusic
+    ? (spark?.audio_volume_balance?.music ?? 100)
+    : 0;
+  const handle = shopFeedHandle(spark?.shop_name);
+  const metaBottom = bottomInset ?? 28;
+  const { flash: flashMuteBadge, Badge: MuteBadge } = useMuteBadgeFlash();
 
-  const onTapVideo = () => {
-    const now = Date.now();
-    if (now - lastTap.current < 280) {
-      lastTap.current = 0;
-      onDoubleTapLike();
-      return;
-    }
-    lastTap.current = now;
-    setTimeout(() => {
-      if (lastTap.current && Date.now() - lastTap.current >= 280) {
-        onToggleMute();
-        lastTap.current = 0;
-      }
-    }, 290);
+  const onSingleTapMute = () => {
+    flashMuteBadge(!muted);
+    onToggleMute();
   };
 
   const audioLabel = spark.audio_title
@@ -160,62 +186,114 @@ const SparkCard = memo(function SparkCard({
       ? spark.tags.map(t => `#${t}`).join(' ')
       : `${spark.shop_name ?? 'Shop'} · Original audio`;
 
+  const locationFromCaption = spark.caption?.match(/📍\s*([^\n]+)/)?.[1]?.trim() ?? null;
+  const locationCity = locationFromCaption
+    ? (locationFromCaption.split(',')[0]?.trim() || locationFromCaption)
+    : null;
+
   return (
     <View style={[s.page, { height: pageHeight, width: SCREEN_W }]}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onTapVideo}>
-        {uri ? (
+      {uri ? (
+        isVideoMedia(uri) ? (
           <FeedVideo
             uri={uri}
             active={active}
             muted={muted}
             loop
             preload={preload}
+            backgroundAudioUrl={musicTrackUrl}
+            audioStartTime={spark?.audio_start_time ?? 0}
+            videoVolumePct={videoVolumePct}
+            musicVolumePct={musicVolumePct}
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
           />
         ) : (
-          <View style={s.fallback}>
-            <ActivityIndicator color={Colors.orange} />
-          </View>
-        )}
-      </Pressable>
+          <Image
+            source={{ uri }}
+            style={StyleSheet.absoluteFillObject}
+            resizeMode="cover"
+            pointerEvents="none"
+          />
+        )
+      ) : (
+        <View style={[s.fallback, StyleSheet.absoluteFillObject]} pointerEvents="none">
+          <ActivityIndicator color={Colors.orange} />
+        </View>
+      )}
+
+      {/* Center-region mute / double-tap like — avoids sidebar & bottom chrome */}
+      <View
+        pointerEvents="box-none"
+        style={[
+          StyleSheet.absoluteFillObject,
+          { top: 96, right: 72, bottom: metaBottom + 120, left: 0 },
+        ]}
+      >
+        <DoubleTapLikeArea
+          overlay
+          onDoubleTapLike={onDoubleTapLike}
+          onSingleTap={onSingleTapMute}
+        />
+        {MuteBadge}
+      </View>
 
       <View style={s.gradTop} pointerEvents="none" />
       <View style={s.gradBottom} pointerEvents="none" />
 
-      {active && (
+      {!immersive && active ? (
         <View style={s.muteChipWrap} pointerEvents="none">
           <View style={s.muteChip}>
             {muted ? <IconMute size={16} /> : <IconVolume size={16} />}
-            <Text style={s.muteChipText}>{muted ? 'Muted' : 'Sound on'}</Text>
+            <Text style={s.muteChipText}>
+              {muted ? 'Muted' : spark.audio_title ? `♪ ${spark.audio_title}` : 'Sound on'}
+            </Text>
           </View>
         </View>
-      )}
+      ) : null}
 
-      <View style={s.sideColumn}>
-        <TouchableOpacity style={s.sideBtn} onPress={onLike} activeOpacity={0.85}>
+      <View style={[s.sideColumn, immersive ? { bottom: metaBottom + 72 } : null]}>
+        <TouchableOpacity style={s.sideBtn} onPress={onLike} activeOpacity={0.85} accessibilityLabel="Like">
           <IconHeart filled={liked} color={liked ? Colors.red : Colors.white} size={30} />
           <Text style={s.sideCount}>{likes > 0 ? formatCount(likes) : 'Like'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={s.sideBtn} onPress={onComment} activeOpacity={0.85}>
+        <TouchableOpacity style={s.sideBtn} onPress={onComment} activeOpacity={0.85} accessibilityLabel="Comment">
           <IconComment color={Colors.white} size={28} />
           <Text style={s.sideCount}>{comments > 0 ? formatCount(comments) : 'Comment'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={s.sideBtn} onPress={onShare} activeOpacity={0.85}>
+        <TouchableOpacity style={s.sideBtn} onPress={onShare} activeOpacity={0.85} accessibilityLabel="Share">
           <IconShare color={Colors.white} size={26} />
           <Text style={s.sideCount}>Share</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={s.sideBtn} onPress={onRepost} activeOpacity={0.85}>
+        <TouchableOpacity
+          style={s.sideBtn}
+          onPress={() => {
+            flashMuteBadge(!muted);
+            onToggleMute();
+          }}
+          activeOpacity={0.85}
+          accessibilityLabel={muted ? 'Unmute' : 'Mute'}
+        >
+          {muted ? <IconMute size={26} /> : <IconVolume size={26} />}
+          <Text style={s.sideCount}>{muted ? 'Muted' : 'Sound'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.sideBtn} onPress={onRepost} activeOpacity={0.85} accessibilityLabel="Repost">
           <IconRepost filled={reposted} color={reposted ? Colors.orange : Colors.white} size={26} />
           <Text style={[s.sideCount, reposted && { color: Colors.orange }]}>
             {reposts > 0 ? formatCount(reposts) : 'Repost'}
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={s.sideBtn} onPress={onMore} activeOpacity={0.85}>
+        <TouchableOpacity style={s.sideBtn} onPress={onMore} activeOpacity={0.85} accessibilityLabel="More options">
           <IconMore color={Colors.white} size={24} />
         </TouchableOpacity>
       </View>
 
-      <View style={s.bottomMeta}>
+      <View style={[s.bottomMeta, { bottom: metaBottom }]}>
+        {quoteCaption?.trim() ? (
+          <GlassSurface style={s.quoteBadge} radius={16} intensity={24}>
+            <Text style={s.quoteBadgeLabel}>Quote repost</Text>
+            <Text style={s.quoteBadgeText} numberOfLines={3}>{quoteCaption.trim()}</Text>
+          </GlassSurface>
+        ) : null}
         <ProductCommerceBanner spark={spark} onBuy={onBuy} onChat={onChat} />
         <View style={s.creatorRow}>
           <View style={s.avatarWrap}>
@@ -234,7 +312,11 @@ const SparkCard = memo(function SparkCard({
           </View>
           <View style={s.creatorCopy}>
             <Text style={s.handle} numberOfLines={1}>{handle}</Text>
-            {following ? <Text style={s.followingLabel}>Following</Text> : null}
+            {locationCity ? (
+              <Text style={s.locationTag} numberOfLines={1}>📍 {locationCity}</Text>
+            ) : following ? (
+              <Text style={s.followingLabel}>Following</Text>
+            ) : null}
           </View>
         </View>
         <SparkCaption text={spark.caption} />
@@ -257,6 +339,8 @@ function SparkListRow({
   pageHeight,
   muted,
   isShopFollowed,
+  immersive,
+  bottomInset,
   onToggleMute,
   onLike,
   onDoubleTapLike,
@@ -275,6 +359,8 @@ function SparkListRow({
   pageHeight: number;
   muted: boolean;
   isShopFollowed: boolean;
+  immersive?: boolean;
+  bottomInset?: number;
   onToggleMute: () => void;
   onLike: (spark: SparkItem) => void;
   onDoubleTapLike: (spark: SparkItem) => void;
@@ -294,9 +380,10 @@ function SparkListRow({
     commentCount: spark.total_comments ?? 0,
     repostCount: spark.total_reposts ?? 0,
     isFollowing: isShopFollowed || !!spark.is_following,
+    quoteCaption: spark.quote_caption ?? null,
   }), [
     spark.id, spark.is_liked, spark.is_reposted, spark.total_likes,
-    spark.total_comments, spark.total_reposts, spark.is_following, isShopFollowed,
+    spark.total_comments, spark.total_reposts, spark.is_following, spark.quote_caption, isShopFollowed,
   ]);
   const interaction = cached ?? fallback;
 
@@ -313,6 +400,9 @@ function SparkListRow({
       reposted={interaction.isReposted}
       following={isShopFollowed || interaction.isFollowing}
       muted={muted}
+      immersive={immersive}
+      bottomInset={bottomInset}
+      quoteCaption={interaction.quoteCaption || spark.quote_caption}
       onToggleMute={onToggleMute}
       onLike={() => onLike(spark)}
       onDoubleTapLike={() => onDoubleTapLike(spark)}
@@ -333,7 +423,18 @@ function formatCount(n: number) {
   return String(n);
 }
 
-export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
+export function SparksFeed({
+  sparks,
+  preloadRadius = 1,
+  immersive = false,
+  pageHeightOverride,
+  onRequestClose,
+  hideBackButton = false,
+  canCreate = false,
+  onCreateSpark,
+  onDeleted,
+}: SparksFeedProps) {
+  const insets = useSafeAreaInsets();
   const profile = useAuthStore(s => s.profile);
   const followedShopIds = useAuthStore(s => s.followedShopIds);
   const toggleFollowedShop = useAuthStore(s => s.toggleFollowedShop);
@@ -341,15 +442,80 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
   const hydrateFromSparks = useSparkInteractionsStore(s => s.hydrateFromSparks);
   const toggleLike = useSparkInteractionsStore(s => s.toggleLike);
   const toggleRepost = useSparkInteractionsStore(s => s.toggleRepost);
+  const quoteRepost = useSparkInteractionsStore(s => s.quoteRepost);
+  const unrepost = useSparkInteractionsStore(s => s.unrepost);
   const setFollowing = useSparkInteractionsStore(s => s.setFollowing);
   const cacheVersion = useSparkInteractionsStore(s => s.version);
 
-  const [pageHeight, setPageHeight] = useState(Math.max(WINDOW_H - 160, 480));
+  const defaultHeight = immersive
+    ? Math.round(pageHeightOverride ?? WINDOW_H)
+    : Math.max(WINDOW_H - 160, 480);
+  const [pageHeight, setPageHeight] = useState(defaultHeight);
   const [activeIndex, setActiveIndex] = useState(0);
   const globalMuted = useFeedMediaStore(s => s.globalMuted);
   const toggleGlobalMute = useFeedMediaStore(s => s.toggleGlobalMute);
+  /** Immersive Moments start with sound on (Reels-like); home carousel stays globally muted. */
+  const [immersiveMuted, setImmersiveMuted] = useState(false);
+  const muted = immersive ? immersiveMuted : globalMuted;
+  const onToggleMute = useCallback(() => {
+    if (immersive) {
+      setImmersiveMuted(m => !m);
+      return;
+    }
+    toggleGlobalMute();
+  }, [immersive, toggleGlobalMute]);
+
+  useEffect(() => {
+    if (immersive) setImmersiveMuted(false);
+  }, [immersive]);
   const [menuSpark, setMenuSpark] = useState<SparkItem | null>(null);
   const [commentSpark, setCommentSpark] = useState<SparkItem | null>(null);
+  const [shareSparkTarget, setShareSparkTarget] = useState<SparkItem | null>(null);
+  const [repostBusy, setRepostBusy] = useState(false);
+  const [deletingMoment, setDeletingMoment] = useState(false);
+
+  const isOwnMoment = !!(
+    menuSpark?.author_id
+    && profile?.id
+    && menuSpark.author_id === profile.id
+  );
+
+  const handleDeleteMoment = useCallback(() => {
+    if (!menuSpark || !isOwnMoment || deletingMoment) return;
+    const target = menuSpark;
+    Alert.alert(
+      'Delete Moment?',
+      'This Moment will be removed from your feed. You can’t undo this.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              setDeletingMoment(true);
+              try {
+                await softDeleteMoment(target.id);
+                setMenuSpark(null);
+                onDeleted?.(target.id);
+              } catch (e: any) {
+                Alert.alert('Could not delete', e?.message || 'Please try again.');
+              } finally {
+                setDeletingMoment(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [menuSpark, isOwnMoment, deletingMoment, onDeleted]);
+
+  useEffect(() => {
+    if (immersive) {
+      const next = Math.round(pageHeightOverride ?? WINDOW_H);
+      setPageHeight(next);
+    }
+  }, [immersive, pageHeightOverride]);
 
   const sparksKey = useMemo(
     () => sparks.map(row => `${row.id}:${row.total_likes}:${row.total_comments}:${row.total_reposts}`).join('|'),
@@ -361,16 +527,39 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
   }, [sparksKey, hydrateFromSparks, sparks]);
 
   const onLayout = (e: LayoutChangeEvent) => {
+    if (immersive) return;
     const h = Math.floor(e.nativeEvent.layout.height);
     if (h > 200 && Math.abs(h - pageHeight) > 2) setPageHeight(h);
   };
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
-    const top = viewableItems.find(v => v.isViewable);
-    if (top?.index != null && top.index >= 0) setActiveIndex(top.index);
+    const visible = (viewableItems ?? []).filter(v => v.isViewable && v.index != null && v.index >= 0);
+    if (!visible.length) return;
+    // During a page snap, multiple rows can briefly qualify — prefer the highest coverage if present.
+    const top = [...visible].sort((a, b) => {
+      const ap = typeof (a as any).percentVisible === 'number' ? (a as any).percentVisible : 0;
+      const bp = typeof (b as any).percentVisible === 'number' ? (b as any).percentVisible : 0;
+      if (bp !== ap) return bp - ap;
+      return (a.index ?? 0) - (b.index ?? 0);
+    })[0];
+    const next = top?.index;
+    if (next == null || next < 0) return;
+    setActiveIndex(prev => (prev === next ? prev : next));
   }).current;
 
-  const viewabilityConfig = useMemo(() => ({ itemVisiblePercentThreshold: 70 }), []);
+  const viewabilityConfig = useMemo(() => ({
+    itemVisiblePercentThreshold: 55,
+    minimumViewTime: 1,
+    waitForInteraction: false,
+  }), []);
+
+  /** Snap settle backup — FlashList viewability can lag a frame behind paging. */
+  const onScrollSettle = useCallback((e: { nativeEvent: { contentOffset: { y: number } } }) => {
+    if (pageHeight <= 0) return;
+    const next = Math.round(e.nativeEvent.contentOffset.y / pageHeight);
+    if (next < 0 || next >= sparks.length) return;
+    setActiveIndex(prev => (prev === next ? prev : next));
+  }, [pageHeight, sparks.length]);
 
   const handleLike = useCallback((spark: SparkItem) => {
     void toggleLike(spark.id, profile?.id);
@@ -383,18 +572,28 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
     void toggleLike(spark.id, profile?.id);
   }, [profile?.id, toggleLike]);
 
+  const openShareSheet = useCallback((spark: SparkItem) => {
+    // Defer so the opening tap does not dismiss the transparent Modal backdrop.
+    setTimeout(() => setShareSparkTarget(spark), 40);
+  }, []);
+
   const handleRepost = useCallback((spark: SparkItem) => {
-    void toggleRepost(spark.id, profile?.id, spark.shop_id);
-  }, [profile?.id, toggleRepost]);
+    openShareSheet(spark);
+  }, [openShareSheet]);
+
+  const shareInteraction = useSparkInteractionsStore(state =>
+    shareSparkTarget ? state.getInteraction(shareSparkTarget.id, shareSparkTarget) : null,
+  );
 
   const handleFollow = useCallback((spark: SparkItem) => {
+    if (!spark.shop_id) return;
     const nextFollowing = !followedShopIds.includes(spark.shop_id);
     setFollowing(spark.id, nextFollowing);
     void toggleFollowedShop(spark.shop_id, spark.shop_name);
   }, [followedShopIds, setFollowing, toggleFollowedShop]);
 
   const handleBuy = useCallback((spark: SparkItem) => {
-    if (!profile || !spark.product_id) return;
+    if (!profile || !spark.product_id || !spark.shop_id) return;
     void addItem(profile.id, spark.product_id, spark.shop_id, 1);
     Alert.alert('Added to cart', `${spark.product?.title ?? 'Product'} was added to your cart.`);
   }, [profile, addItem]);
@@ -404,13 +603,14 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
       Alert.alert('Sign in required', 'Please sign in to message this shop.');
       return;
     }
+    if (!spark.shop_id) return;
     try {
       await createBuyerEnquiry({
         shopId: spark.shop_id,
         buyerId: profile.id,
         productId: spark.product_id ?? null,
         type: 'chat',
-        message: `Hi, I saw your Spark and would like to know more${spark.product?.title ? ` about ${spark.product.title}` : ''}.`,
+        message: `Hi, I saw your Moment and would like to know more${spark.product?.title ? ` about ${spark.product.title}` : ''}.`,
       });
       Alert.alert('Message sent', 'The shop will see your enquiry in their inbox.');
     } catch (e: any) {
@@ -418,38 +618,69 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
     }
   }, [profile]);
 
-  const shareSpark = useCallback(async (spark: SparkItem) => {
-    try {
-      await Share.share({
-        message: `${spark.shop_name}: ${spark.caption}\nhttps://cityconnect.app/sparks/${spark.id}`,
-        title: `${spark.shop_name} on Sparks`,
-      });
-    } catch { /* noop */ }
-  }, []);
-
-  const menuInteraction = useSparkInteractionsStore(state =>
-    menuSpark ? state.getInteraction(menuSpark.id, menuSpark) : null,
-  );
-
   if (!sparks.length) {
     return (
-      <View style={s.empty} onLayout={onLayout}>
+      <View style={[s.empty, immersive && { height: pageHeight, backgroundColor: Colors.black }]} onLayout={onLayout}>
+        {immersive && onRequestClose && !hideBackButton ? (
+          <TouchableOpacity
+            style={[s.backBtn, { top: insets.top + 12 }]}
+            onPress={onRequestClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close Moments"
+          >
+            <Text style={s.backBtnText}>←</Text>
+          </TouchableOpacity>
+        ) : null}
         <Text style={s.emptyEmoji}>✨</Text>
-        <Text style={s.emptyTitle}>No Sparks yet</Text>
+        <Text style={s.emptyTitle}>No Moments yet</Text>
         <Text style={s.emptyText}>
-          Short videos from local shops will appear here. Follow shops or create a Spark from your seller menu.
+          Short videos from local shops will appear here. Follow shops or create a Moment from your seller menu.
         </Text>
+        {immersive && canCreate && onCreateSpark ? (
+          <TouchableOpacity
+            style={s.emptyCreateBtn}
+            onPress={onCreateSpark}
+            accessibilityRole="button"
+            accessibilityLabel="Create Moment"
+          >
+            <Text style={s.emptyCreateBtnText}>Create Moment</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     );
   }
 
   return (
-    <View style={s.root} onLayout={onLayout}>
+    <View style={[s.root, immersive && { height: pageHeight }]} onLayout={onLayout}>
+      {immersive && onRequestClose && !hideBackButton ? (
+        <TouchableOpacity
+          style={[s.backBtn, { top: insets.top + 12 }]}
+          onPress={onRequestClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close Moments"
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
+          <Text style={s.backBtnText}>←</Text>
+        </TouchableOpacity>
+      ) : null}
+
+      {immersive && canCreate && onCreateSpark ? (
+        <TouchableOpacity
+          style={[s.createFab, { top: insets.top + 12 }]}
+          onPress={onCreateSpark}
+          accessibilityRole="button"
+          accessibilityLabel="Create Moment"
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
+          <Text style={s.createFabText}>+</Text>
+        </TouchableOpacity>
+      ) : null}
+
       <FlashList
         data={sparks}
-        keyExtractor={item => item.id}
-        extraData={`${cacheVersion}-${followedShopIds.join(',')}`}
-        estimatedItemSize={WINDOW_H}
+        keyExtractor={(item, index) => item?.id || `spark-${index}`}
+        extraData={`${cacheVersion}-${followedShopIds.join(',')}-${muted}-${activeIndex}-${pageHeight}`}
+        estimatedItemSize={pageHeight}
         pagingEnabled
         showsVerticalScrollIndicator={false}
         decelerationRate="fast"
@@ -459,6 +690,8 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
         drawDistance={pageHeight * 2}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
+        onMomentumScrollEnd={onScrollSettle}
+        onScrollEndDrag={onScrollSettle}
         renderItem={({ item, index }) => (
           <SparkListRow
             spark={item}
@@ -466,13 +699,15 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
             activeIndex={activeIndex}
             preloadRadius={preloadRadius}
             pageHeight={pageHeight}
-            muted={globalMuted}
-            isShopFollowed={followedShopIds.includes(item.shop_id)}
-            onToggleMute={toggleGlobalMute}
+            muted={muted}
+            isShopFollowed={item.shop_id ? followedShopIds.includes(item.shop_id) : false}
+            immersive={immersive}
+            bottomInset={immersive ? Math.max(insets.bottom, 12) : 28}
+            onToggleMute={onToggleMute}
             onLike={handleLike}
             onDoubleTapLike={handleDoubleTapLike}
             onComment={setCommentSpark}
-            onShare={shareSpark}
+            onShare={openShareSheet}
             onRepost={handleRepost}
             onFollow={handleFollow}
             onMore={setMenuSpark}
@@ -489,40 +724,82 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
         onClose={() => setCommentSpark(null)}
       />
 
+      <ShareRepostSheet
+        visible={!!shareSparkTarget}
+        onClose={() => setShareSparkTarget(null)}
+        contentKind="spark"
+        contentId={shareSparkTarget?.id ?? ''}
+        shopId={shareSparkTarget?.shop_id ?? ''}
+        shopName={shareSparkTarget?.shop_name}
+        shareTitle={`${shareSparkTarget?.shop_name ?? 'Shop'} on Moments`}
+        shareMessage={`${shareSparkTarget?.shop_name}: ${shareSparkTarget?.caption ?? ''}\nhttps://cityconnect.app/sparks/${shareSparkTarget?.id ?? ''}`}
+        shareUrl={`https://cityconnect.app/sparks/${shareSparkTarget?.id ?? ''}`}
+        isReposted={!!shareInteraction?.isReposted}
+        busy={repostBusy}
+        onQuickRepost={async () => {
+          if (!shareSparkTarget?.shop_id) return;
+          setRepostBusy(true);
+          try {
+            await toggleRepost(shareSparkTarget.id, profile?.id, shareSparkTarget.shop_id);
+          } finally {
+            setRepostBusy(false);
+          }
+        }}
+        onUndoRepost={async () => {
+          if (!shareSparkTarget) return;
+          setRepostBusy(true);
+          try {
+            await unrepost(shareSparkTarget.id, profile?.id);
+          } finally {
+            setRepostBusy(false);
+          }
+        }}
+        onQuoteRepost={async (quote) => {
+          if (!shareSparkTarget?.shop_id) return;
+          setRepostBusy(true);
+          try {
+            await quoteRepost(shareSparkTarget.id, profile?.id, shareSparkTarget.shop_id, quote);
+          } finally {
+            setRepostBusy(false);
+          }
+        }}
+      />
+
       <Modal transparent visible={!!menuSpark} animationType="fade" onRequestClose={() => setMenuSpark(null)}>
         <Pressable style={s.menuBackdrop} onPress={() => setMenuSpark(null)}>
           <View style={s.menuSheet}>
             <View style={s.menuHandle} />
-            <Text style={s.menuTitle}>Spark options</Text>
+            <Text style={s.menuTitle}>Moment options</Text>
             <TouchableOpacity
               style={s.menuItem}
               onPress={() => {
-                if (menuSpark) void shareSpark(menuSpark);
+                if (menuSpark) openShareSheet(menuSpark);
                 setMenuSpark(null);
               }}
             >
-              <Text style={s.menuItemText}>Share Spark</Text>
+              <Text style={s.menuItemText}>Share / Repost</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={s.menuItem}
-              onPress={() => {
-                if (menuSpark) handleRepost(menuSpark);
-                setMenuSpark(null);
-              }}
-            >
-              <Text style={s.menuItemText}>
-                {menuInteraction?.isReposted ? 'Undo repost' : 'Repost Spark'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={s.menuItem}
-              onPress={() => {
-                Alert.alert('Reported', 'Thanks — we will review this Spark.');
-                setMenuSpark(null);
-              }}
-            >
-              <Text style={[s.menuItemText, { color: Colors.red }]}>Report</Text>
-            </TouchableOpacity>
+            {isOwnMoment ? (
+              <TouchableOpacity
+                style={s.menuItem}
+                disabled={deletingMoment}
+                onPress={handleDeleteMoment}
+              >
+                <Text style={[s.menuItemText, { color: Colors.red }]}>
+                  {deletingMoment ? 'Deleting…' : 'Delete Moment'}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={s.menuItem}
+                onPress={() => {
+                  Alert.alert('Reported', 'Thanks — we will review this Moment.');
+                  setMenuSpark(null);
+                }}
+              >
+                <Text style={[s.menuItemText, { color: Colors.red }]}>Report</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={s.menuItem} onPress={() => setMenuSpark(null)}>
               <Text style={[s.menuItemText, { color: Colors.dim }]}>Cancel</Text>
             </TouchableOpacity>
@@ -536,7 +813,7 @@ export function SparksFeed({ sparks, preloadRadius = 1 }: SparksFeedProps) {
 /** @deprecated Use SparksFeed — kept for existing imports */
 export const ReelsFeed = SparksFeed;
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.black },
   page: {
     backgroundColor: Colors.black,
@@ -616,6 +893,27 @@ const s = StyleSheet.create({
     bottom: 28,
     gap: 10,
     zIndex: 4,
+  },
+  quoteBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  quoteBadgeLabel: {
+    color: Colors.orange,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+    fontFamily: Fonts.bodySemiBold,
+  },
+  quoteBadgeText: {
+    color: Colors.white,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Fonts.bodyMedium,
   },
   productBanner: {
     flexDirection: 'row',
@@ -700,6 +998,62 @@ const s = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
     fontSize: 11,
     fontFamily: Fonts.bodyMedium,
+  },
+  locationTag: {
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: 12,
+    fontFamily: Fonts.bodyMedium,
+  },
+  backBtn: {
+    position: 'absolute',
+    left: 14,
+    zIndex: 20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backBtnText: {
+    color: Colors.white,
+    fontSize: 22,
+    fontWeight: '700',
+    marginTop: -1,
+  },
+  createFab: {
+    position: 'absolute',
+    right: 14,
+    zIndex: 20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.orange,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createFabText: {
+    color: Colors.white,
+    fontSize: 26,
+    fontWeight: '700',
+    marginTop: -2,
+  },
+  emptyCreateBtn: {
+    marginTop: 20,
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: Colors.orange,
+  },
+  emptyCreateBtnText: {
+    color: Colors.white,
+    fontSize: 15,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '700',
   },
   caption: {
     color: Colors.white,
@@ -790,4 +1144,4 @@ const s = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-});
+}));

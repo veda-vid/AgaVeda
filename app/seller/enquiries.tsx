@@ -14,7 +14,7 @@ import { usePullToRefresh } from '../../hooks/usePullToRefresh';
 import { EnquiryCard } from '../../components/seller/EnquiryCard';
 import { EnquiryChatDrawer } from '../../components/seller/EnquiryChatDrawer';
 import { filterEnquiriesByTab } from '../../lib/enquiryUtils';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import type { Shop, ShopEnquiry, ShopEnquiryStatus } from '../../types';
 
 type TabKey = 'all' | 'quote' | 'callback';
@@ -206,7 +206,7 @@ export default function SellerEnquiriesScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   safeTop: { backgroundColor: Colors.bg, borderBottomWidth: 1, borderBottomColor: Colors.border },
   header: {
@@ -257,4 +257,4 @@ const s = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 12,
   },
   ctaBtnText: { color: Colors.white, fontFamily: Fonts.bodySemiBold, fontWeight: '800', fontSize: 14 },
-});
+}));

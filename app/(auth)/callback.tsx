@@ -6,7 +6,7 @@ import * as Linking from 'expo-linking';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { getSupabase } from '../../lib/supabase';
 import { useAuthStore } from '../../stores/authStore';
-import { Colors } from '../../constants/theme';
+import { Colors, createDynamicStyles } from '../../constants/theme';
 
 function hasCompletedLocation(profile: { city?: string; lat?: number | null; lng?: number | null } | null | undefined) {
   return !!profile && !!profile.city?.trim() && profile.lat != null && profile.lng != null;
@@ -14,7 +14,7 @@ function hasCompletedLocation(profile: { city?: string; lat?: number | null; lng
 
 export default function OAuthCallbackScreen() {
   const { role } = useLocalSearchParams<{ role?: string }>();
-  const { profile, isInitialized } = useAuthStore();
+  const { profile, isInitialized, refreshProfile } = useAuthStore();
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [callbackType, setCallbackType] = useState<string | null>(null);
@@ -116,12 +116,16 @@ export default function OAuthCallbackScreen() {
       return;
     }
 
-    const destination = hasCompletedLocation(profile)
-      ? '/(tabs)'
-      : `/location?role=${encodeURIComponent(role ?? profile?.role ?? 'buyer')}`;
-
-    router.replace(destination as any);
-  }, [isInitialized, profile, role, ready, callbackType]);
+    const roleHint = Array.isArray(role) ? role[0] : role;
+    void (async () => {
+      try { await refreshProfile(roleHint); } catch {}
+      const nextProfile = useAuthStore.getState().profile;
+      const destination = hasCompletedLocation(nextProfile)
+        ? '/(tabs)'
+        : `/location?role=${encodeURIComponent(roleHint ?? nextProfile?.role ?? 'buyer')}`;
+      router.replace(destination as any);
+    })();
+  }, [isInitialized, profile, role, ready, callbackType, refreshProfile, router]);
 
   return (
     <View style={styles.root}>
@@ -130,11 +134,11 @@ export default function OAuthCallbackScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createDynamicStyles((Colors) => ({
   root: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Colors.bg,
   },
-});
+}));

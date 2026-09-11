@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "CityConnect",
+    "name": "Vedastya",
     "slug": "cityconnect",
     "scheme": "cityconnect",
     "version": "1.0.0",
@@ -9,26 +9,26 @@
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#08080E"
+      "resizeMode": "cover",
+      "backgroundColor": "#0F172A"
     },
     "assetBundlePatterns": [
-      "**/*"
+      "assets/*"
     ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cityconnect.app",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "CityConnect uses your location to show nearby shops and services.",
-        "NSLocationAlwaysUsageDescription": "CityConnect uses your location to show nearby shops and services.",
-        "NSCameraUsageDescription": "CityConnect needs camera access to upload product photos.",
-        "NSPhotoLibraryUsageDescription": "CityConnect needs photo library access to upload product photos."
+        "NSLocationWhenInUseUsageDescription": "Vedastya uses your location to show nearby shops, services, and local Daily updates.",
+        "NSLocationAlwaysUsageDescription": "Vedastya uses your location to show nearby shops, services, and local Daily updates.",
+        "NSCameraUsageDescription": "Vedastya needs camera access so you can upload photos and videos.",
+        "NSPhotoLibraryUsageDescription": "Vedastya needs photo library access so you can share images from your gallery."
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#08080E"
+        "backgroundColor": "#0F172A"
       },
       "package": "com.cityconnect.app",
       "permissions": [
@@ -50,16 +50,16 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow CityConnect to use your location."
+          "locationAlwaysAndWhenInUsePermission": "Allow Vedastya to use your location for nearby shops and services."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow CityConnect to access your photos."
+          "photosPermission": "Allow Vedastya to access your photos."
         }
       ],
-      "expo-video"
+      "expo-font"
     ]
   }
 }

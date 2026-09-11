@@ -6,34 +6,41 @@ import {
 import { useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import {
-  repostPost, getComments, addComment, deletePost, setProductAvailability, getShopCommerceMeta,
+  getComments, addComment, deletePost, setProductAvailability, getShopCommerceMeta,
 } from '../../lib/api';
-import { useProfileMediaStore } from '../../stores/profileMediaStore';
 import { usePostInteractionsStore } from '../../stores/postInteractionsStore';
 import { useFeedMediaStore } from '../../stores/feedMediaStore';
 import { hapticLight } from '../../lib/haptics';
 import {
   estimateChatsInitiated, estimatePostImpressions, estimatePostSaves,
 } from '../../lib/sellerPostMetrics';
-import { Colors, Fonts, Radius, Shadow } from '../../constants/theme';
+import { Colors, Fonts, Radius, Shadow, createDynamicStyles } from '../../constants/theme';
 import { CaptionBlock } from './CaptionBlock';
+import { DoubleTapLikeArea } from './DoubleTapLikeArea';
 import { MediaCarousel } from './MediaCarousel';
 import { IconBookmark, IconComment, IconHeart, IconMore, IconRepost, IconShare } from './FeedIcons';
 import {
   parseTextCardCaption, resolveFeedMediaUrl, shopFeedHandle, timeAgo,
 } from './feedUtils';
+import { DEFAULT_AVATAR } from '../../lib/feedSafe';
 import { getTextBackground, getTextColor, getTextFontStyle } from './feedTextCard';
+import { ShareRepostSheet } from '../common/ShareRepostSheet';
+import { useAuthStore } from '../../stores/authStore';
 
 const SCREEN_W = Dimensions.get('window').width;
 
 export type FeedPost = {
   id: string;
   shop_id?: string;
+  /** Alias used by some feed payloads; prefer shop_id for routing. */
+  seller_id?: string;
   shop_name?: string;
   shop_logo?: string | null;
   shop_category?: string;
   shop_city?: string;
   shop_avg_rating?: number;
+  shop_is_open?: boolean;
+  shop_is_verified?: boolean;
   distance_km?: number;
   caption?: string;
   media_urls?: string[];
@@ -62,6 +69,8 @@ type PostCardProps = {
   isBuyer: boolean;
   isSellerOwner?: boolean;
   layout?: 'feed' | 'masonry';
+  /** Merchant home market feed: analytics overlays + competitor distance/bookmark */
+  merchantMarket?: boolean;
   isMediaActive?: boolean;
   onAddToCart?: (productId: string, shopId: string) => void;
   onDeleted?: (postId: string) => void;
@@ -84,30 +93,45 @@ export function PostCard({
   isBuyer,
   isSellerOwner = false,
   layout = 'feed',
+  merchantMarket = false,
   isMediaActive = true,
   onAddToCart,
   onDeleted,
 }: PostCardProps) {
   const router = useRouter();
-  const cardW = layout === 'masonry' ? (SCREEN_W - 12 * 2 - 8) / 2 : SCREEN_W - 24;
-  const mediaH = layout === 'masonry' ? cardW * 1.28 : SCREEN_W * (5 / 4);
+  const cardW = layout === 'masonry' ? (SCREEN_W - 10 * 2 - 10) / 2 : SCREEN_W - 24;
+  const mediaH = layout === 'masonry' ? cardW * 1.22 : SCREEN_W * (5 / 4);
 
-  const cached = usePostInteractionsStore(s => s.getInteraction(post.id, post));
+  const postId = post?.id;
+  const cached = usePostInteractionsStore(s => (postId ? s.byId[postId] : undefined));
   const postCacheVersion = usePostInteractionsStore(s => s.version);
   const toggleLikeStore = usePostInteractionsStore(s => s.toggleLike);
   const toggleRepostStore = usePostInteractionsStore(s => s.toggleRepost);
+  const quoteRepostStore = usePostInteractionsStore(s => s.quoteRepost);
+  const unrepostStore = usePostInteractionsStore(s => s.unrepost);
   const toggleSaveStore = usePostInteractionsStore(s => s.toggleSave);
   const bumpCommentCount = usePostInteractionsStore(s => s.bumpCommentCount);
   const addCommentOptimistic = usePostInteractionsStore(s => s.addCommentOptimistic);
   const globalMuted = useFeedMediaStore(s => s.globalMuted);
   const toggleGlobalMute = useFeedMediaStore(s => s.toggleGlobalMute);
+  const profileAvatar = useAuthStore(s => s.profile?.avatar_url);
 
-  const shopLogoUri = resolveFeedMediaUrl(post.shop_logo);
-  const handle = shopFeedHandle(post.shop_name);
-  const locationLine = [
-    post.shop_city || post.shop_category,
-    post.distance_km != null ? `${Number(post.distance_km).toFixed(1)} km away` : null,
-  ].filter(Boolean).join(' · ');
+  const shopLogoUri = resolveFeedMediaUrl(post?.shop_logo) || DEFAULT_AVATAR;
+  const handle = shopFeedHandle(post?.shop_name);
+  const shopProfileId = post?.shop_id || post?.seller_id;
+  const distanceKm = post?.distance_km != null && Number.isFinite(Number(post.distance_km))
+    ? Number(post.distance_km)
+    : null;
+  const locationLine = distanceKm != null
+    ? `${distanceKm.toFixed(1)} km away`
+    : (post?.shop_city || post?.shop_category
+      ? `📍 ${post.shop_city || post.shop_category}`
+      : null);
+
+  const openShopProfile = () => {
+    if (!shopProfileId) return;
+    router.push(`/shop/${shopProfileId}` as any);
+  };
 
   const [shopMeta, setShopMeta] = useState<{
     phone?: string;
@@ -121,35 +145,42 @@ export function PostCard({
   const [showPostMenu, setShowPostMenu] = useState(false);
   const [showSellerManage, setShowSellerManage] = useState(false);
   const [showRepostSheet, setShowRepostSheet] = useState(false);
-  const [quoteMode, setQuoteMode] = useState(false);
-  const [quoteText, setQuoteText] = useState('');
   const [comments, setComments] = useState<any[]>([]);
   const [commentText, setCommentText] = useState('');
   const [loadingComments, setLoadingComments] = useState(false);
   const [reposting, setReposting] = useState(false);
   const [managing, setManaging] = useState(false);
 
-  const liked = cached.isLiked;
-  const saved = cached.isSaved;
-  const reposted = cached.isReposted;
-  const likes = cached.likeCount;
-  const reposts = cached.repostCount;
-  const commentCount = cached.commentCount;
+  const liked = cached?.isLiked ?? !!post?.is_liked;
+  const saved = cached?.isSaved ?? !!post?.is_saved;
+  const reposted = cached?.isReposted ?? !!post?.is_reposted;
+  const likes = cached?.likeCount ?? post?.total_likes ?? 0;
+  const reposts = cached?.repostCount ?? post?.total_reposts ?? 0;
+  const commentCount = cached?.commentCount ?? post?.total_comments ?? 0;
 
-  const textCard = parseTextCardCaption(post.caption);
-  const mediaUrls = post.media_urls?.filter(Boolean) ?? [];
-  const productId = post.product_id || post.product?.id;
+  const textCard = parseTextCardCaption(post?.caption);
+  const mediaUrls = (post?.media_urls ?? [])
+    .filter((u): u is string => typeof u === 'string' && !!u.trim() && u !== 'null');
+  const productId = post?.product_id || post?.product?.id;
 
   useEffect(() => {
-    if (!isBuyer || !productId || !post.shop_id) return;
+    if (!isBuyer || !productId || !post?.shop_id) return;
     let cancelled = false;
     getShopCommerceMeta(post.shop_id)
       .then(meta => { if (!cancelled) setShopMeta(meta); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [isBuyer, productId, post.shop_id]);
+  }, [isBuyer, productId, post?.shop_id]);
 
   void postCacheVersion;
+
+  if (!post || !postId) {
+    return (
+      <View style={[s.card, layout === 'masonry' && s.cardMasonry, { width: cardW, minHeight: 72 }]}>
+        <Text style={{ color: Colors.dim, fontSize: 13, padding: 16 }}>Post unavailable</Text>
+      </View>
+    );
+  }
 
   const impressions = estimatePostImpressions(post);
   const saves = estimatePostSaves(post);
@@ -176,7 +207,7 @@ export function PostCard({
     } catch { /* noop */ }
   };
 
-  const handleRepost = async (quote?: string | null) => {
+  const handleQuickRepost = async () => {
     if (reposting || isSellerOwner) return;
     const shopId = post.shop_id;
     if (!shopId) {
@@ -184,29 +215,52 @@ export function PostCard({
       return;
     }
     setReposting(true);
-    setShowPostMenu(false);
-    setShowRepostSheet(false);
-    setQuoteMode(false);
     try {
-      if (quote?.trim()) {
-        await repostPost(userId, post.id, shopId, quote.trim());
-        useProfileMediaStore.getState().invalidateUserReposts();
-      } else {
-        await toggleRepostStore(post.id, userId, shopId);
-      }
-      setQuoteText('');
+      await toggleRepostStore(post.id, userId, shopId);
     } catch {
       Alert.alert('Error', 'Could not update repost. Please try again.');
+      throw new Error('repost failed');
+    } finally {
+      setReposting(false);
+    }
+  };
+
+  const handleQuoteRepost = async (quote: string) => {
+    if (reposting || isSellerOwner) return;
+    const shopId = post.shop_id;
+    if (!shopId) {
+      Alert.alert('Error', 'Could not repost this item.');
+      return;
+    }
+    setReposting(true);
+    try {
+      await quoteRepostStore(post.id, userId, shopId, quote);
+    } catch {
+      Alert.alert('Error', 'Could not quote repost. Please try again.');
+      throw new Error('quote failed');
+    } finally {
+      setReposting(false);
+    }
+  };
+
+  const handleUndoRepost = async () => {
+    if (reposting || isSellerOwner) return;
+    setReposting(true);
+    try {
+      await unrepostStore(post.id, userId);
+    } catch {
+      Alert.alert('Error', 'Could not undo repost. Please try again.');
+      throw new Error('undo failed');
     } finally {
       setReposting(false);
     }
   };
 
   const openRepostSheet = () => {
-    if (reposting) return;
-    setQuoteMode(false);
-    setQuoteText(post.quote_caption ?? '');
-    setShowRepostSheet(true);
+    if (isSellerOwner) return;
+    void hapticLight();
+    // Defer so the press that opens the sheet does not also hit the Modal backdrop.
+    setTimeout(() => setShowRepostSheet(true), 40);
   };
 
   const handleShare = async () => {
@@ -337,7 +391,7 @@ export function PostCard({
   const handleDeletePost = () => {
     Alert.alert(
       'Delete post',
-      'This will remove the post from your shop feed. This cannot be undone.',
+      'This will remove the post from your feed. You can’t undo this.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -360,39 +414,102 @@ export function PostCard({
     );
   };
 
+  const handleBoostPost = () => {
+    setShowSellerManage(false);
+    Toast.show({
+      type: 'info',
+      text1: 'Boost Post',
+      text2: 'Local boost campaigns will be available soon for your broadcast zone.',
+      visibilityTime: 2400,
+    });
+  };
+
   return (
-    <View style={[s.card, layout === 'masonry' && s.cardMasonry, { width: cardW }]}>
+    <View style={[
+      s.card,
+      layout === 'masonry' && s.cardMasonry,
+      merchantMarket && s.cardMerchant,
+      { width: cardW },
+    ]}>
       {(post.is_repost_entry || post.reposted_by_name) ? (
         <View style={s.repostBanner}>
-          <IconRepost size={14} color={Colors.orange} filled />
+          <View style={s.repostAvatarChip}>
+            <Image
+              source={{ uri: resolveFeedMediaUrl((post as any).reposted_by_avatar) || profileAvatar || DEFAULT_AVATAR }}
+              style={s.repostAvatarImg}
+            />
+          </View>
+          <IconRepost size={13} color={Colors.orange} filled />
           <Text style={s.repostBannerText} numberOfLines={1}>
-            {post.reposted_by_name ?? 'Someone'} reposted
+            <Text style={s.repostHandle}>{post.reposted_by_name ?? 'Someone'}</Text>
+            {' '}reposted
+            {post.reposted_at || post.created_at
+              ? ` · ${timeAgo(post.reposted_at ?? post.created_at)}`
+              : ''}
           </Text>
         </View>
       ) : null}
 
-      <View style={s.header}>
-        <View style={s.avatarRing}>
-          {shopLogoUri
-            ? <Image source={{ uri: shopLogoUri }} style={s.avatar} resizeMode="cover" />
-            : <Text style={s.avatarEmoji}>🏪</Text>}
-        </View>
-        <View style={s.headerCopy}>
-          <View style={s.nameRow}>
-            <Text style={s.username} numberOfLines={1}>{post.shop_name}</Text>
-            {post.is_ad && (
-              <View style={s.sponsored}><Text style={s.sponsoredText}>Sponsored</Text></View>
+      <View style={[s.header, merchantMarket && s.headerMasonry]}>
+        <TouchableOpacity
+          style={s.shopTap}
+          onPress={openShopProfile}
+          activeOpacity={0.85}
+          disabled={!shopProfileId}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${post.shop_name || 'shop'} profile`}
+        >
+          <View style={[s.avatarRing, merchantMarket && s.avatarRingMasonry]}>
+            <Image
+              source={{ uri: shopLogoUri }}
+              style={s.avatar}
+              resizeMode="cover"
+            />
+          </View>
+          <View style={s.headerCopy}>
+            <View style={s.nameRow}>
+              <Text style={[s.username, merchantMarket && s.usernameMasonry]} numberOfLines={1}>
+                {post.shop_name || 'Shop'}
+              </Text>
+              {post.shop_is_verified && !merchantMarket ? (
+                <Text style={s.verifiedBadge}>✅</Text>
+              ) : null}
+              {post.is_ad && (
+                <View style={s.sponsored}><Text style={s.sponsoredText}>Sponsored</Text></View>
+              )}
+            </View>
+            {merchantMarket ? (
+              <Text style={s.distanceBadge} numberOfLines={1}>
+                {distanceKm != null ? `${distanceKm.toFixed(1)} km away` : (post.shop_city || 'Nearby')}
+              </Text>
+            ) : (
+              <>
+                <Text style={s.timeLine}>{timeAgo(post.created_at)}</Text>
+                {locationLine ? <Text style={s.location} numberOfLines={1}>{locationLine}</Text> : null}
+              </>
             )}
           </View>
-          {locationLine ? <Text style={s.location} numberOfLines={1}>{locationLine}</Text> : null}
-        </View>
-        <TouchableOpacity
-          onPress={() => (isSellerOwner ? openSellerManage() : setShowPostMenu(true))}
-          hitSlop={12}
-          style={s.menuBtn}
-        >
-          <IconMore />
         </TouchableOpacity>
+        {!merchantMarket || !isSellerOwner ? (
+          <TouchableOpacity
+            onPress={() => {
+              if (merchantMarket && !isSellerOwner) {
+                void handleSave();
+                return;
+              }
+              if (isSellerOwner) openSellerManage();
+              else setShowPostMenu(true);
+            }}
+            hitSlop={12}
+            style={s.menuBtn}
+          >
+            {merchantMarket && !isSellerOwner ? (
+              <IconBookmark filled={saved} color={saved ? Colors.orange : Colors.text} />
+            ) : (
+              <IconMore />
+            )}
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {post.quote_caption ? (
@@ -403,7 +520,11 @@ export function PostCard({
 
       <View style={s.mediaShell}>
         {textCard ? (
-          <View style={[s.textCard, { backgroundColor: getTextBackground(textCard.background), height: mediaH }]}>
+          <DoubleTapLikeArea
+            style={[s.textCard, { backgroundColor: getTextBackground(textCard.background), height: mediaH }]}
+            onDoubleTapLike={() => void handleDoubleTapLike()}
+            disabled={isSellerOwner}
+          >
             <Text
               style={[
                 s.textCardText,
@@ -413,7 +534,7 @@ export function PostCard({
             >
               {textCard.text}
             </Text>
-          </View>
+          </DoubleTapLikeArea>
         ) : mediaUrls.length > 0 ? (
           <MediaCarousel
             urls={mediaUrls}
@@ -426,25 +547,48 @@ export function PostCard({
             onDoubleTapLike={() => void handleDoubleTapLike()}
           />
         ) : (
-          <View style={[s.mediaFallback, { height: mediaH }]}>
+          <DoubleTapLikeArea
+            style={[s.mediaFallback, { height: mediaH }]}
+            onDoubleTapLike={() => void handleDoubleTapLike()}
+            disabled={isSellerOwner}
+          >
             <Text style={s.fallbackEmoji}>🏪</Text>
             <Text style={s.fallbackLabel}>{post.shop_name ?? 'Shop update'}</Text>
-          </View>
+          </DoubleTapLikeArea>
         )}
+
+        {merchantMarket && isSellerOwner ? (
+          <View style={s.analyticsOverlay} pointerEvents="box-none">
+            <View style={s.analyticsGlass}>
+              <Text style={s.analyticsOverlayText}>
+                👁️ {impressions} · 💾 {saves}
+              </Text>
+            </View>
+          </View>
+        ) : null}
       </View>
 
       {!post.is_ad && (
         <>
           {isSellerOwner ? (
-            <View style={s.sellerMetricsRow}>
-              <SellerMetric label="Impressions" emoji="👁️" value={impressions} />
-              <SellerMetric label="Saves" emoji="🔖" value={saves} />
-              <SellerMetric label="Chats Initiated" emoji="💬" value={chats} />
-              <TouchableOpacity style={s.manageBtn} onPress={openSellerManage}>
-                <Text style={s.manageBtnText}>Manage</Text>
+            <View style={merchantMarket ? s.sellerManageRow : s.sellerMetricsRow}>
+              {!merchantMarket ? (
+                <>
+                  <SellerMetric label="Impressions" emoji="👁️" value={impressions} />
+                  <SellerMetric label="Saves" emoji="🔖" value={saves} />
+                  <SellerMetric label="Chats Initiated" emoji="💬" value={chats} />
+                </>
+              ) : null}
+              <TouchableOpacity
+                style={[s.manageBtn, merchantMarket && s.manageBtnFull]}
+                onPress={openSellerManage}
+              >
+                <Text style={s.manageBtnText}>
+                  {merchantMarket ? '⚙️ Manage' : 'Manage'}
+                </Text>
               </TouchableOpacity>
             </View>
-          ) : (
+          ) : merchantMarket ? null : (
           <>
           <View style={s.actions}>
             <View style={s.actionsLeft}>
@@ -454,7 +598,14 @@ export function PostCard({
               <ScalePress onPress={openComments}>
                 <IconComment />
               </ScalePress>
-              <ScalePress onPress={openRepostSheet}>
+              <TouchableOpacity
+                onPress={openRepostSheet}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Repost"
+                style={s.repostHit}
+              >
                 <View style={s.repostAction}>
                   <IconRepost
                     filled={reposted}
@@ -466,25 +617,27 @@ export function PostCard({
                     </Text>
                   ) : null}
                 </View>
-              </ScalePress>
+              </TouchableOpacity>
               <ScalePress onPress={handleShare}>
                 <IconShare />
               </ScalePress>
             </View>
             <ScalePress onPress={handleSave}>
-              <IconBookmark filled={saved} color={saved ? Colors.text : Colors.text} />
+              <IconBookmark filled={saved} color={saved ? Colors.orange : Colors.text} />
             </ScalePress>
           </View>
 
           {isBuyer && productId && post.shop_id ? (
             <View style={s.commerceRow}>
               <TouchableOpacity
-                style={s.commerceChip}
+                style={[s.commerceChip, s.commerceChipPrimary]}
                 onPress={() => void handleCommerceAdd()}
                 disabled={addingToCart}
                 activeOpacity={0.85}
               >
-                <Text style={s.commerceChipText}>{addingToCart ? '…' : '🛍️ Add'}</Text>
+                <Text style={[s.commerceChipText, s.commerceChipTextPrimary]}>
+                  {addingToCart ? '…' : '🛍️ + Add to Cart'}
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity style={s.commerceChip} onPress={handleCommerceChat} activeOpacity={0.85}>
                 <Text style={s.commerceChipText}>💬 Chat</Text>
@@ -492,16 +645,15 @@ export function PostCard({
               <TouchableOpacity style={s.commerceChip} onPress={handleCommerceWhatsApp} activeOpacity={0.85}>
                 <Text style={s.commerceChipText}>💚 WhatsApp</Text>
               </TouchableOpacity>
-              {post.distance_km != null ? (
-                <TouchableOpacity style={s.commerceChip} onPress={handleCommerceMaps} activeOpacity={0.85}>
-                  <Text style={s.commerceChipText}>📍 {Number(post.distance_km).toFixed(1)} km</Text>
-                </TouchableOpacity>
-              ) : null}
+              <TouchableOpacity style={s.commerceChip} onPress={handleCommerceMaps} activeOpacity={0.85}>
+                <Text style={s.commerceChipText}>📍 Navigate</Text>
+              </TouchableOpacity>
             </View>
           ) : null}
           </>
           )}
 
+          {merchantMarket ? null : (
           <View style={s.meta}>
             <View style={s.statsRow}>
               {!isSellerOwner && likes > 0 && (
@@ -530,6 +682,7 @@ export function PostCard({
             )}
             <Text style={s.timestamp}>{timeAgo(post.created_at)}</Text>
           </View>
+          )}
         </>
       )}
 
@@ -558,94 +711,44 @@ export function PostCard({
         </View>
       )}
 
-      <Modal transparent visible={showRepostSheet} animationType="fade" onRequestClose={() => setShowRepostSheet(false)}>
-        <Pressable style={s.menuBackdrop} onPress={() => { setShowRepostSheet(false); setQuoteMode(false); }}>
-          <Pressable style={s.menuSheet} onPress={() => {}}>
-            <View style={s.menuHandle} />
-            <Text style={s.repostSheetTitle}>Repost</Text>
-
-            {quoteMode ? (
-              <View style={s.quoteComposer}>
-                <TextInput
-                  value={quoteText}
-                  onChangeText={setQuoteText}
-                  placeholder="Add a comment above the original post…"
-                  placeholderTextColor={Colors.dim}
-                  style={s.quoteInput}
-                  multiline
-                  maxLength={280}
-                  autoFocus
-                />
-                <TouchableOpacity
-                  style={[s.quoteSubmit, (!quoteText.trim() || reposting) && s.quoteSubmitDisabled]}
-                  disabled={!quoteText.trim() || reposting}
-                  onPress={() => void handleRepost(quoteText.trim())}
-                >
-                  {reposting
-                    ? <ActivityIndicator color={Colors.white} />
-                    : <Text style={s.quoteSubmitText}>Repost with Quote</Text>}
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setQuoteMode(false)} style={s.menuItem}>
-                  <Text style={[s.menuItemText, s.menuCancel]}>Back</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <>
-                {reposted ? (
-                  <TouchableOpacity
-                    style={s.menuItem}
-                    disabled={reposting}
-                    onPress={() => void handleRepost(null)}
-                  >
-                    <Text style={[s.menuItemText, { color: Colors.red }]}>
-                      {reposting ? 'Updating…' : 'Undo Repost'}
-                    </Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    style={s.menuItem}
-                    disabled={reposting}
-                    onPress={() => void handleRepost(null)}
-                  >
-                    <Text style={s.menuItemText}>
-                      {reposting ? 'Reposting…' : 'Quick Repost'}
-                    </Text>
-                    <Text style={s.menuItemSub}>Instantly share to your profile feed</Text>
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  style={s.menuItem}
-                  onPress={() => setQuoteMode(true)}
-                >
-                  <Text style={s.menuItemText}>Repost with Quote</Text>
-                  <Text style={s.menuItemSub}>Add a custom caption above the original</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.menuItem} onPress={() => setShowRepostSheet(false)}>
-                  <Text style={[s.menuItemText, s.menuCancel]}>Cancel</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <ShareRepostSheet
+        visible={showRepostSheet}
+        onClose={() => setShowRepostSheet(false)}
+        contentKind="post"
+        contentId={post.id}
+        shopId={post.shop_id ?? ''}
+        shopName={post.shop_name}
+        shareTitle={`${post.shop_name ?? 'Shop'} on Vedastya`}
+        shareMessage={`Check out this from ${post.shop_name}: ${post.caption || 'Amazing find!'}\n\nhttps://cityconnect.app/post/${post.id}`}
+        shareUrl={`https://cityconnect.app/post/${post.id}`}
+        isReposted={reposted}
+        busy={reposting}
+        onQuickRepost={handleQuickRepost}
+        onUndoRepost={handleUndoRepost}
+        onQuoteRepost={handleQuoteRepost}
+      />
 
       <Modal transparent visible={showSellerManage} animationType="fade" onRequestClose={() => setShowSellerManage(false)}>
         <Pressable style={s.menuBackdrop} onPress={() => setShowSellerManage(false)}>
           <View style={s.menuSheet}>
             <View style={s.menuHandle} />
-            <Text style={s.repostSheetTitle}>Manage listing</Text>
+            <Text style={s.repostSheetTitle}>Manage Post</Text>
             <TouchableOpacity style={s.menuItem} onPress={handleEditListing} disabled={managing}>
-              <Text style={s.menuItemText}>Edit price or details</Text>
+              <Text style={s.menuItemText}>Edit Listing</Text>
               <Text style={s.menuItemSub}>Open product editor</Text>
             </TouchableOpacity>
             {productId ? (
               <TouchableOpacity style={s.menuItem} onPress={() => void handleToggleAvailability()} disabled={managing}>
-                <Text style={s.menuItemText}>Mark unavailable</Text>
+                <Text style={s.menuItemText}>Mark Out of Stock</Text>
                 <Text style={s.menuItemSub}>Hide from buyers until restocked</Text>
               </TouchableOpacity>
             ) : null}
+            <TouchableOpacity style={s.menuItem} onPress={handleBoostPost} disabled={managing}>
+              <Text style={s.menuItemText}>Boost Post</Text>
+              <Text style={s.menuItemSub}>Promote inside your broadcast zone</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={s.menuItem} onPress={handleDeletePost} disabled={managing}>
-              <Text style={[s.menuItemText, { color: Colors.red }]}>Delete post</Text>
+              <Text style={[s.menuItemText, { color: Colors.red }]}>Delete</Text>
             </TouchableOpacity>
             <TouchableOpacity style={s.menuItem} onPress={() => setShowSellerManage(false)}>
               <Text style={[s.menuItemText, s.menuCancel]}>Cancel</Text>
@@ -687,7 +790,7 @@ function SellerMetric({ emoji, label, value }: { emoji: string; label: string; v
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   card: {
     marginBottom: 12,
     marginHorizontal: 12,
@@ -699,23 +802,55 @@ const s = StyleSheet.create({
     ...Shadow.md,
   },
   cardMasonry: {
-    marginHorizontal: 4,
-    marginBottom: 8,
+    marginHorizontal: 5,
+    marginBottom: 10,
+    borderRadius: 16,
+  },
+  cardMerchant: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    backgroundColor: Colors.card,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+      },
+      android: { elevation: 3 },
+      default: {},
+    }),
   },
   repostBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 2,
   },
+  repostAvatarChip: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    overflow: 'hidden',
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.orange + '55',
+  },
+  repostAvatarImg: { width: '100%', height: '100%' },
   repostBannerText: {
     flex: 1,
     fontSize: 12,
     fontFamily: Fonts.bodySemiBold,
-    fontWeight: '700',
+    fontWeight: '600',
+    color: Colors.sub,
+  },
+  repostHandle: {
     color: Colors.orange,
+    fontWeight: '800',
+    fontFamily: Fonts.bodySemiBold,
   },
   quoteBlock: {
     paddingHorizontal: 14,
@@ -734,6 +869,18 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     gap: 10,
   },
+  headerMasonry: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  shopTap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+  },
   avatarRing: {
     width: 40,
     height: 40,
@@ -745,6 +892,12 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  avatarRingMasonry: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1.5,
+  },
   avatar: { width: '100%', height: '100%' },
   avatarEmoji: { fontSize: 18 },
   headerCopy: { flex: 1, minWidth: 0 },
@@ -755,6 +908,25 @@ const s = StyleSheet.create({
     fontWeight: '700',
     color: Colors.text,
     letterSpacing: -0.2,
+    flexShrink: 1,
+  },
+  usernameMasonry: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  distanceBadge: {
+    marginTop: 1,
+    fontSize: 10,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '700',
+    color: Colors.sub,
+  },
+  verifiedBadge: { fontSize: 11 },
+  timeLine: {
+    fontSize: 11,
+    color: Colors.dim,
+    fontWeight: '600',
+    marginTop: 1,
   },
   location: {
     fontSize: 12,
@@ -776,11 +948,68 @@ const s = StyleSheet.create({
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
   },
+  analyticsOverlay: {
+    position: 'absolute',
+    left: 8,
+    top: 8,
+    right: 8,
+    flexDirection: 'row',
+  },
+  analyticsGlass: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(20,20,24,0.52)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  analyticsOverlayText: {
+    color: Colors.white,
+    fontSize: 11,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '700',
+  },
+  distanceOverlay: {
+    position: 'absolute',
+    right: 8,
+    top: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  distanceOverlayText: {
+    color: Colors.white,
+    fontSize: 10,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '700',
+  },
+  sellerManageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.border,
+  },
+  manageBtnFull: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  competitorHint: {
+    flex: 1,
+    fontSize: 11,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '600',
+    color: Colors.sub,
+    paddingRight: 8,
+  },
   textCard: {
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 28,
+    overflow: 'hidden',
   },
   textCardText: { textAlign: 'center' },
   mediaFallback: {
@@ -789,6 +1018,7 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: Colors.surface,
     gap: 8,
+    overflow: 'hidden',
   },
   fallbackEmoji: { fontSize: 48 },
   fallbackLabel: { color: Colors.sub, fontSize: 13, fontFamily: Fonts.bodyMedium },
@@ -800,6 +1030,7 @@ const s = StyleSheet.create({
     paddingVertical: 10,
   },
   actionsLeft: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  repostHit: { paddingVertical: 4, paddingHorizontal: 2 },
   repostAction: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   actionCount: {
     fontSize: 13,
@@ -834,10 +1065,17 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
+  commerceChipPrimary: {
+    backgroundColor: Colors.orange,
+    borderColor: Colors.orange,
+  },
   commerceChipText: {
     color: Colors.text,
     fontSize: 12,
     fontWeight: '700',
+  },
+  commerceChipTextPrimary: {
+    color: Colors.white,
   },
   meta: { paddingHorizontal: 14, paddingBottom: 14, gap: 4 },
   statsRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 },
@@ -975,4 +1213,4 @@ const s = StyleSheet.create({
     fontFamily: Fonts.bodySemiBold,
     fontWeight: '800',
   },
-});
+}));

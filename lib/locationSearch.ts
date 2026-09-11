@@ -11,7 +11,7 @@ export type LocationSuggestion = {
 };
 
 const NOMINATIM_BASE = 'https://nominatim.openstreetmap.org';
-const USER_AGENT = 'CityConnect/1.0 (Spark location picker)';
+const USER_AGENT = 'CityConnect/1.0 (Moment location picker)';
 
 type NominatimAddress = {
   city?: string;

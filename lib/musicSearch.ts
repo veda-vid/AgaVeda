@@ -1,5 +1,8 @@
 // lib/musicSearch.ts — iTunes Search API for Spark audio picker (preview clips)
 
+import type { SparkVolumeBalance } from './sparkAudioSync';
+import { DEFAULT_SPARK_VOLUME_BALANCE } from './sparkAudioSync';
+
 export type MusicCategoryId =
   | 'trending'
   | 'bollywood'
@@ -22,6 +25,9 @@ export type SparkAudioSelection = {
   audio_title: string;
   audio_artist: string;
   audio_url: string | null;
+  audio_start_time?: number;
+  audio_duration_sec?: number | null;
+  audio_volume_balance?: SparkVolumeBalance;
 };
 
 export const MUSIC_CATEGORIES: Array<{
@@ -121,11 +127,14 @@ export async function fetchMusicByCategory(
   return searchMusicTracks(term, { country, limit: 25 });
 }
 
-export function trackToAudioSelection(track: MusicTrack): SparkAudioSelection {
+export function trackToAudioSelection(track: MusicTrack, startTimeSec = 0): SparkAudioSelection {
   return {
     audio_track_id: track.id,
     audio_title: track.title,
     audio_artist: track.artist,
     audio_url: track.previewUrl,
+    audio_start_time: startTimeSec,
+    audio_duration_sec: track.durationMs ? Math.round(track.durationMs / 1000) : null,
+    audio_volume_balance: { ...DEFAULT_SPARK_VOLUME_BALANCE },
   };
 }

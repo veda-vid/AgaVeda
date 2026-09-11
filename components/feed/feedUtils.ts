@@ -3,12 +3,14 @@ import { getSupabaseConfig } from '../../lib/config';
 const { url: SUPABASE_URL } = getSupabaseConfig();
 
 export function resolveFeedMediaUrl(value?: string | null) {
-  if (!value) return null;
-  if (/^https?:\/\//i.test(value)) return value;
-  if (!SUPABASE_URL) return value;
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (!SUPABASE_URL) return trimmed;
   const base = SUPABASE_URL.replace(/\/$/, '');
-  if (value.startsWith('/')) return `${base}${value}`;
-  return `${base}/${value.replace(/^\//, '')}`;
+  if (trimmed.startsWith('/')) return `${base}${trimmed}`;
+  return `${base}/${trimmed.replace(/^\//, '')}`;
 }
 
 export function shopFeedHandle(name?: string | null) {
@@ -21,8 +23,11 @@ export function isVideoMedia(url?: string | null, mediaType?: string) {
   return /\.(mp4|mov|m4v|webm)(\?|$)/i.test(url ?? '');
 }
 
-export function timeAgo(ts: string) {
-  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+export function timeAgo(ts?: string | null) {
+  if (!ts) return 'just now';
+  const ms = new Date(ts).getTime();
+  if (!Number.isFinite(ms)) return 'just now';
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;

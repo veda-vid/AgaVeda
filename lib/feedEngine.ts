@@ -25,6 +25,7 @@ async function fetchFeaturedVerifiedPosts(userId?: string, limit = 12): Promise<
     .from('posts')
     .select('*, shop:shops(id,name,logo_url,category,avg_rating,is_open,is_verified)')
     .eq('is_ad', false)
+    .is('deleted_at', null)
     .order('total_likes', { ascending: false })
     .limit(limit * 2);
 

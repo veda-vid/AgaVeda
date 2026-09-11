@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import type { UserRole } from '../../types';
 
 const ROLES = [
@@ -64,7 +64,7 @@ export default function RoleScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root:    { flex: 1, backgroundColor: Colors.bg },
   content: { padding: 24, paddingTop: 70, paddingBottom: 40 },
   heroGlow: { position: 'absolute', top: 40, right: -20, width: 180, height: 180, borderRadius: 90, backgroundColor: Colors.orange + '16' },
@@ -88,4 +88,4 @@ const s = StyleSheet.create({
   btn:     { backgroundColor: Colors.orange, borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginTop: 12 },
   btnText: { color: Colors.white, fontSize: 16, fontWeight: '700' },
   terms:   { textAlign: 'center', color: Colors.dim, fontSize: 11, marginTop: 16 },
-});
+}));

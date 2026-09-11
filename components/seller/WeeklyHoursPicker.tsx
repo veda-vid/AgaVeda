@@ -4,7 +4,7 @@ import {
   View, Text, Pressable, StyleSheet, Platform, Modal, ScrollView,
 } from 'react-native';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import {
   WEEKDAYS, type WeekdayKey, type WeeklySchedule, type DayHours,
   defaultWeeklySchedule, preset24_7Schedule, presetStandardHours,
@@ -205,7 +205,7 @@ export function WeeklyHoursPicker({
   );
 }
 
-const st = StyleSheet.create({
+const st = createDynamicStyles((Colors) => ({
   root: { gap: 14 },
   presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
@@ -264,4 +264,4 @@ const st = StyleSheet.create({
     backgroundColor: Colors.orange, borderRadius: 12, alignItems: 'center', paddingVertical: 12,
   },
   modalDoneText: { color: Colors.white, fontWeight: '800' },
-});
+}));

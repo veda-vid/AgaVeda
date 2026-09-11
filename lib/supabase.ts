@@ -5,6 +5,7 @@ import * as Linking from 'expo-linking';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { friendlyAuthNetworkError, getSupabaseConfig, isDemoAuthEnabled } from './config';
+import { supabaseAuthStorage } from './supabaseStorage';
 import {
   demoGetSession,
   demoGetUser,
@@ -21,28 +22,13 @@ if (!isDemoAuthEnabled() && (!supabaseUrl || !supabaseAnon)) {
   throw new Error('Missing Supabase environment variables. Check .env.local');
 }
 
-const isBrowserRuntime = () => typeof window !== 'undefined' && typeof window.document !== 'undefined';
-const isNativeRuntime = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
-
-const SecureAdapter = {
-  getItem: async (key: string): Promise<string | null> => {
-    if (isBrowserRuntime()) return window.localStorage.getItem(key);
-    const SecureStore = await import('expo-secure-store');
-    return SecureStore.getItemAsync(key);
-  },
-  setItem: async (key: string, value: string): Promise<void> => {
-    if (isBrowserRuntime()) { window.localStorage.setItem(key, value); return; }
-    const SecureStore = await import('expo-secure-store');
-    await SecureStore.setItemAsync(key, value, {
-      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-    });
-  },
-  removeItem: async (key: string): Promise<void> => {
-    if (isBrowserRuntime()) { window.localStorage.removeItem(key); return; }
-    const SecureStore = await import('expo-secure-store');
-    await SecureStore.deleteItemAsync(key);
-  },
-};
+const isBrowserRuntime = () =>
+  Platform.OS === 'web'
+  && typeof window !== 'undefined'
+  && typeof window.document !== 'undefined';
+const isNativeRuntime =
+  Platform.OS !== 'web'
+  || (typeof navigator !== 'undefined' && (navigator as { product?: string }).product === 'ReactNative');
 
 const getRedirectUrl = (role?: string, path = 'callback') => {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -71,7 +57,7 @@ export const getSupabase = (): SupabaseClient => {
 
   supabaseClient = createClient(url, key, {
     auth: {
-      storage: SecureAdapter,
+      storage: supabaseAuthStorage,
       autoRefreshToken: !isDemoAuthEnabled(),
       persistSession: !isDemoAuthEnabled(),
       detectSessionInUrl: isBrowserRuntime() && !isDemoAuthEnabled(),

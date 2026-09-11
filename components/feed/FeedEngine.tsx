@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, Animated, TouchableOpacity, type ViewStyle,
 } from 'react-native';
-import { Colors, Radius } from '../../constants/theme';
+import { Colors, Radius, createDynamicStyles } from '../../constants/theme';
 
 function ShimmerBlock({ style }: { style: ViewStyle }) {
   const opacity = useRef(new Animated.Value(0.35)).current;
@@ -86,7 +86,7 @@ export function FeedRegionalBanner({ onAdjustRadius }: FeedRegionalBannerProps) 
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   wrap: { paddingTop: 8, gap: 12 },
   shimmer: {
     backgroundColor: '#334155',
@@ -156,4 +156,4 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-});
+}));

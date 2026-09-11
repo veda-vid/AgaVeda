@@ -18,7 +18,7 @@ import * as Location from 'expo-location';
 import { getCurrentUser, getSupabase, isDemoAuthEnabled } from '../../lib/supabase';
 import { upsertProfile } from '../../lib/api';
 import { useAuthStore } from '../../stores/authStore';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import { POPULAR_CITIES, staticMapUrl, type CityOption } from '../../constants/cities';
 import {
   reverseGeocodeLocation,
@@ -140,9 +140,19 @@ export default function LocationScreen() {
       if (result) {
         applySuggestion(result);
       } else {
+        // Prefer a real locality name over the "Current Location" placeholder.
+        let place = '';
+        try {
+          const places = await Location.reverseGeocodeAsync({ latitude, longitude });
+          const hit = places?.[0];
+          place = (
+            hit?.city || hit?.subregion || hit?.district || hit?.name || hit?.region || ''
+          ).trim();
+        } catch { /* keep empty */ }
         setCoords({ lat: latitude, lng: longitude });
-        setCity('Current Location');
-        setSearchQuery('Current Location');
+        const label = place || 'Unknown area';
+        setCity(label);
+        setSearchQuery(label);
       }
     } catch {
       if (mountedRef.current) {
@@ -409,7 +419,7 @@ export default function LocationScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: SLATE_900 },
   content: { padding: 24, paddingBottom: 48 },
   icon: { fontSize: 42, textAlign: 'center', marginTop: 12 },
@@ -578,4 +588,4 @@ const s = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.55 },
   btnText: { color: Colors.white, fontSize: 16, fontWeight: '800' },
-});
+}));

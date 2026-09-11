@@ -16,7 +16,7 @@ import {
   adminListShops,
   adminSetShopsActiveByOwner,
 } from '../../lib/api';
-import { Colors } from '../../constants/theme';
+import { Colors, createDynamicStyles } from '../../constants/theme';
 import type { CityNews, CityNewsCategory, Profile, Shop } from '../../types';
 
 const CATEGORIES: CityNewsCategory[] = ['event', 'rates', 'weather', 'alerts', 'general'];
@@ -295,7 +295,7 @@ export default function AdminDashboardScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   header: { padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontSize: 18, fontWeight: '900', color: Colors.text },
@@ -323,5 +323,5 @@ const s = StyleSheet.create({
   modalTitle: { fontSize: 16, fontWeight: '900', color: Colors.text },
   chip: { backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border2, borderRadius: 999, paddingVertical: 10, paddingHorizontal: 12 },
   chipText: { color: Colors.sub, fontWeight: '900' },
-});
+}));
 

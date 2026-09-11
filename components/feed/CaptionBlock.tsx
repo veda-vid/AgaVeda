@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 
 const CAPTION_LIMIT = 120;
 
@@ -29,7 +29,7 @@ export function CaptionBlock({ username, caption, isTextCard }: CaptionBlockProp
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   caption: {
     fontSize: 14,
     fontFamily: Fonts.body,
@@ -44,4 +44,4 @@ const s = StyleSheet.create({
     color: Colors.dim,
     fontWeight: '600',
   },
-});
+}));

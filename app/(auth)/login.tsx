@@ -15,8 +15,9 @@ import {
   isDemoAuthEnabled,
 } from '../../lib/supabase';
 import { useAuthStore } from '../../stores/authStore';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import { friendlyAuthNetworkError } from '../../lib/config';
+import { VedastyaWordmark } from '../../components/common/VedastyaWordmark';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
@@ -85,7 +86,7 @@ export default function LoginScreen() {
   const [username, setUsername] = useState('');
 
   const goAfterAuth = async () => {
-    try { await refreshProfile(); } catch {}
+    try { await refreshProfile(selectedRole); } catch {}
     const nextProfile = useAuthStore.getState().profile;
     if (hasCompletedLocation(nextProfile)) {
       router.replace('/(tabs)' as any);
@@ -265,7 +266,7 @@ export default function LoginScreen() {
         </TouchableOpacity>
 
         <View style={s.brandBlock}>
-          <Text style={s.brand}>Vedastya</Text>
+          <VedastyaWordmark size="lg" showTagline />
           <Text style={s.tagline}>
             {mode === 'forgot'
               ? 'Reset your password'
@@ -404,7 +405,7 @@ export default function LoginScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   content: {
     flexGrow: 1,
@@ -418,9 +419,8 @@ const s = StyleSheet.create({
   },
   back: { position: 'absolute', top: 48, left: 20, zIndex: 2, width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   backText: { color: Colors.text, fontSize: 32, lineHeight: 34, fontWeight: '300' },
-  brandBlock: { alignItems: 'center', marginBottom: 28, marginTop: 24 },
-  brand: { fontSize: 42, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.text, letterSpacing: -0.6, marginBottom: 10 },
-  tagline: { fontSize: 14, color: Colors.sub, textAlign: 'center', lineHeight: 20, paddingHorizontal: 12 },
+  brandBlock: { alignItems: 'center', marginBottom: 28, marginTop: 24, gap: 10 },
+  tagline: { fontSize: 14, color: Colors.sub, textAlign: 'center', lineHeight: 20, paddingHorizontal: 12, marginTop: 4 },
   demoBanner: {
     marginTop: 14,
     backgroundColor: Colors.orange + '22',
@@ -488,4 +488,4 @@ const s = StyleSheet.create({
   footerText: { color: Colors.sub, fontSize: 14 },
   footerAction: { color: Colors.orange, fontWeight: '800' },
   roleHint: { textAlign: 'center', color: Colors.dim, fontSize: 11, marginTop: 16 },
-});
+}));

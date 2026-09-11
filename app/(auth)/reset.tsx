@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { getSupabase, isDemoAuthEnabled } from '../../lib/supabase';
 import { updateProfile } from '../../lib/api';
 import { useAuthStore } from '../../stores/authStore';
-import { Colors } from '../../constants/theme';
+import { Colors, createDynamicStyles } from '../../constants/theme';
 import type { UserRole } from '../../types';
 
 function notify(title: string, message: string) {
@@ -136,7 +136,7 @@ export default function ResetPasswordScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg, justifyContent: 'center', padding: 20 },
   center: { flex: 1, backgroundColor: Colors.bg, justifyContent: 'center', alignItems: 'center' },
   card: { backgroundColor: Colors.card, borderRadius: 16, padding: 18, borderWidth: 1, borderColor: Colors.border2 },
@@ -163,4 +163,4 @@ const s = StyleSheet.create({
   btnText: { color: Colors.white, fontWeight: '900', fontSize: 15 },
   link: { marginTop: 14, alignItems: 'center' },
   linkText: { color: Colors.blue, fontWeight: '800' },
-});
+}));

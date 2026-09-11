@@ -1,31 +1,47 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
-import { Colors, Fonts } from '../../constants/theme';
+import { View, Text, ScrollView, Platform } from 'react-native';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import { getMarketTickerSnapshot, type MarketRateItem } from '../../lib/marketRates';
+import { GlassSurface } from '../ui/modernSurfaces';
 
 type MarketTickerProps = {
   city?: string;
+  /** Soft glass chips for merchant command hub */
+  glass?: boolean;
 };
 
-function RateChip({ item }: { item: MarketRateItem }) {
+function RateChip({ item, glass }: { item: MarketRateItem; glass?: boolean }) {
   const up = item.changePct > 0;
   const down = item.changePct < 0;
   const changeColor = up ? Colors.green : down ? Colors.red : Colors.dim;
   const arrow = up ? '▲' : down ? '▼' : '—';
   const changeLabel = item.changePct === 0 ? '0.00%' : `${Math.abs(item.changePct).toFixed(2)}%`;
+  const badgeBg = up ? Colors.green + '22' : down ? Colors.red + '22' : Colors.dim + '18';
 
-  return (
-    <View style={s.chip}>
+  const inner = (
+    <>
       <Text style={s.chipLabel}>{item.label}</Text>
       <Text style={s.chipValue}>{item.value}</Text>
-      <Text style={[s.chipChange, { color: changeColor }]}>
-        {arrow} {changeLabel}
-      </Text>
-    </View>
+      <View style={[s.trendBadge, { backgroundColor: badgeBg }]}>
+        <Text style={[s.chipChange, { color: changeColor }]}>
+          {arrow} {changeLabel}
+        </Text>
+      </View>
+    </>
   );
+
+  if (glass) {
+    return (
+      <GlassSurface style={s.chipGlass} radius={999} intensity={24}>
+        {inner}
+      </GlassSurface>
+    );
+  }
+
+  return <View style={s.chip}>{inner}</View>;
 }
 
-export function MarketTicker({ city }: MarketTickerProps) {
+export function MarketTicker({ city, glass = false }: MarketTickerProps) {
   const snapshot = useMemo(() => getMarketTickerSnapshot(city), [city]);
   const scrollRef = useRef<ScrollView>(null);
   const offsetRef = useRef(0);
@@ -45,8 +61,12 @@ export function MarketTicker({ city }: MarketTickerProps) {
   }, []);
 
   return (
-    <View style={s.wrap} accessibilityRole="summary" accessibilityLabel="Daily market rates">
-      <View style={s.badge}>
+    <View
+      style={[s.wrap, glass && s.wrapGlass]}
+      accessibilityRole="summary"
+      accessibilityLabel="Live local market rates"
+    >
+      <View style={[s.badge, glass && s.badgeGlass]}>
         <Text style={s.badgeText}>LIVE</Text>
       </View>
       <ScrollView
@@ -57,7 +77,7 @@ export function MarketTicker({ city }: MarketTickerProps) {
         contentContainerStyle={s.row}
       >
         {loopItems.map((item, index) => (
-          <RateChip key={`${item.id}-${index}`} item={item} />
+          <RateChip key={`${item.id}-${index}`} item={item} glass={glass} />
         ))}
       </ScrollView>
       <Text style={s.cityTag}>{snapshot.city} · {snapshot.updatedLabel}</Text>
@@ -65,12 +85,16 @@ export function MarketTicker({ city }: MarketTickerProps) {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   wrap: {
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
     paddingVertical: 8,
+  },
+  wrapGlass: {
+    backgroundColor: Platform.OS === 'web' ? 'rgba(255,255,255,0.04)' : Colors.bg,
+    borderBottomColor: Colors.border2,
   },
   badge: {
     position: 'absolute',
@@ -81,6 +105,13 @@ const s = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
+  },
+  badgeGlass: {
+    shadowColor: Colors.orange,
+    shadowOpacity: 0.45,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 3,
   },
   badgeText: {
     color: Colors.white,
@@ -107,6 +138,16 @@ const s = StyleSheet.create({
     borderColor: Colors.border2,
     marginRight: 10,
   },
+  chipGlass: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+  },
   chipLabel: {
     color: Colors.sub,
     fontSize: 11,
@@ -118,6 +159,11 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontFamily: Fonts.bodySemiBold,
     fontWeight: '800',
+  },
+  trendBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
   },
   chipChange: {
     fontSize: 10,
@@ -131,4 +177,4 @@ const s = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 4,
   },
-});
+}));

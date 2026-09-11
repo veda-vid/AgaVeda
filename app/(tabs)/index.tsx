@@ -1,12 +1,12 @@
 // app/(tabs)/index.tsx — Instagram-style feed (buyer following + seller create)
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput,
   Image, ActivityIndicator, StyleSheet, Dimensions, Modal, Pressable, Alert, ScrollView, Platform,
+  InteractionManager, Linking,
   type ViewToken,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../stores/authStore';
@@ -14,44 +14,69 @@ import { useCartStore } from '../../stores/cartStore';
 import {
   getFeed, getFollowingFeed,
   getStories, createStory, getUnifiedSparksFeed, createReel,
-  getShopByOwner, uploadImage, createPost,
-  getSellerDashboardMetrics, getServiceProDashboardStats, setServiceProviderAvailability,
+  getShopByOwner, uploadMediaFromUri, uploadSparkMediaFromUri, createPost,
+  getServiceProDashboardStats, setServiceProviderAvailability,
+  ensureServiceProviderRecord,
   type ServiceProDashboardStats,
 } from '../../lib/api';
 import { loadHomeFeed } from '../../lib/feedEngine';
-import { getSupabaseConfig } from '../../lib/config';
 import { useScreenRefresh } from '../../hooks/useScreenRefresh';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import { PostCard } from '../../components/feed/PostCard';
-import { MarketTicker } from '../../components/feed/MarketTicker';
-import { FeedHydrationSkeleton, FeedRegionalBanner, FeedStoriesSkeleton } from '../../components/feed/FeedEngine';
+import { FeedHydrationSkeleton, FeedRegionalBanner } from '../../components/feed/FeedEngine';
 import { SellerHeaderHero } from '../../components/seller/SellerHeaderHero';
+import { SellerHeader } from '../../components/seller/SellerHeader';
+import { MerchantRadiusSheet } from '../../components/seller/MerchantRadiusSheet';
+import { SellerSparksCarousel } from '../../components/seller/SellerSparksCarousel';
 import { ServiceProHeaderHero } from '../../components/seller/ServiceProHeaderHero';
+import { AddServiceSkillModal } from '../../components/seller/AddServiceSkillModal';
+import { ProLeadsDrawer } from '../../components/seller/ProLeadsDrawer';
+import { ProCreateMenuSheet } from '../../components/composer/ProCreateMenuSheet';
+import { CreatePostModal, type CreatePostPayload } from '../../components/composer/CreatePostModal';
+import { UploadProgressBar } from '../../components/common/UploadProgressBar';
+import { Header } from '../../components/common/Header';
+import { FeedHeader } from '../../components/feed/FeedHeader';
+import { LocationRadiusSheet } from '../../components/feed/LocationRadiusSheet';
+import { SparksCarousel } from '../../components/feed/SparksCarousel';
+import { SellerMasonryFeed } from '../../components/feed/SellerMasonryFeed';
+import { StoryViewerModal } from '../../components/feed/StoryViewerModal';
+import { TopRatedShopsCarousel } from '../../components/feed/TopRatedShopsCarousel';
+import {
+  detectFeedLocation,
+  fetchTopRatedLocalShops,
+  persistFeedLocation,
+} from '../../services/feedApi';
+import {
+  fetchSellerCommandMetrics,
+  persistSellerTargetRadius,
+  type SellerCommandMetrics,
+  type SellerRadiusKm,
+} from '../../services/sellerApi';
+import { ErrorBoundary } from '../../components/common/ErrorBoundary';
+import {
+  sanitizeFeedPosts,
+  sanitizeSparkItems,
+  safeFeedItemKey,
+} from '../../lib/feedSafe';
 import {
   isBuyerRole,
   isMerchantSeller as checkMerchantSeller,
-  isServiceProvider as checkServiceProvider,
   isSellerLike as checkSellerLike,
-  getRoleBadgeLabel,
 } from '../../stores/roleUtils';
+import { useUploadProgressStore } from '../../stores/uploadProgressStore';
 import { MediaSourceSheet, type MediaSourceChoice } from '../../components/media/MediaSourceSheet';
-import { SparksFeed, type SparkItem } from '../../components/feed/SparksFeed';
-import { SparkComposer } from '../../components/feed/SparkComposer';
+import { type SparkItem } from '../../components/feed/SparksFeed';
+import { SparksReelsViewer } from '../../components/sparks/SparksReelsViewer';
+import { UploadSparkModal, type SparkPublishPayload } from '../../components/sparks/UploadSparkModal';
+import { GLASS, GlassSurface, SpringPressable } from '../../components/ui/modernSurfaces';
+import { hapticLight } from '../../lib/haptics';
+import { agentDebugLog } from '../../lib/agentDebugLog';
+import Toast from 'react-native-toast-message';
 import { usePostInteractionsStore } from '../../stores/postInteractionsStore';
-import type { Story, SellerDashboardMetrics } from '../../types';
+import type { Story, ServiceProvider, Shop } from '../../types';
 
 const W = Dimensions.get('window').width;
 const WINDOW_HEIGHT = Dimensions.get('window').height;
-const { url: SUPABASE_URL } = getSupabaseConfig();
-
-function resolveMediaUrl(value?: string | null) {
-  if (!value) return null;
-  if (/^https?:\/\//i.test(value)) return value;
-  if (!SUPABASE_URL) return value;
-  const normalizedBase = SUPABASE_URL.replace(/\/$/, '');
-  if (value.startsWith('/')) return `${normalizedBase}${value}`;
-  return `${normalizedBase}/${value.replace(/^\//, '')}`;
-}
 
 const TEXT_CARD_BACKGROUNDS = [
   { id: 'sunset', color: '#E94F37' },
@@ -100,11 +125,10 @@ export default function FeedScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ create_menu?: string; refresh_feed?: string }>();
   const profile = useAuthStore(s => s.profile);
-  const insets = useSafeAreaInsets();
+  const updateLocalProfile = useAuthStore(s => s.updateProfile);
   const followedShopIds = useAuthStore(s => s.followedShopIds);
   const notifications = useAuthStore(s => s.notifications);
   const addNotification = useAuthStore(s => s.addNotification);
-  const clearNotifications = useAuthStore(s => s.clearNotifications);
   const loadNotifications = useAuthStore(s => s.loadNotifications);
   const addItem = useCartStore(s => s.addItem);
   const loadCart = useCartStore(s => s.loadCart);
@@ -114,10 +138,11 @@ export default function FeedScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [feedView, setFeedView] = useState<'posts' | 'sparks'>('posts');
+  const [showSparksViewer, setShowSparksViewer] = useState(false);
   const [feedMode, setFeedMode] = useState<'nearby' | 'following'>('nearby');
-  const [showNotifications, setShowNotifications] = useState(false);
   const [showStoryComposer, setShowStoryComposer] = useState(false);
   const [showSparkComposer, setShowSparkComposer] = useState(false);
+  const [sparkComposerKey, setSparkComposerKey] = useState(0);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showTextPostComposer, setShowTextPostComposer] = useState(false);
   const [storyDraft, setStoryDraft] = useState('');
@@ -125,21 +150,35 @@ export default function FeedScreen() {
   const [stories, setStories] = useState<Story[]>([]);
   const [sparks, setSparks] = useState<SparkItem[]>([]);
   const [posting, setPosting] = useState(false);
+  /** Active story for the viewer — keep this name (`viewStory`); Hermes Fast Refresh
+   *  throws `Property 'viewStory' doesn't exist` if old closures still reference it. */
   const [viewStory, setViewStory] = useState<Story | null>(null);
+  /** Instagram-style multi-page ring currently open in the viewer. */
+  const [viewStoryPages, setViewStoryPages] = useState<Story[]>([]);
+  const [viewStoryStartIndex, setViewStoryStartIndex] = useState(0);
+  const [locationSheetOpen, setLocationSheetOpen] = useState(false);
+  const [detectingLocation, setDetectingLocation] = useState(false);
+  const [topRatedShops, setTopRatedShops] = useState<Shop[]>([]);
   const [textPostDraft, setTextPostDraft] = useState('');
   const [textFontStyle, setTextFontStyle] = useState<TextFontStyle>('classic');
   const [textBackground, setTextBackground] = useState<TextBackground>('sunset');
   const [textColor, setTextColor] = useState<TextColor>('white');
   const [hasShop, setHasShop] = useState<boolean | null>(null);
   const [sellerShopId, setSellerShopId] = useState<string | null>(null);
-  const [sellerMetrics, setSellerMetrics] = useState<SellerDashboardMetrics | null>(null);
+  const [sellerMetrics, setSellerMetrics] = useState<SellerCommandMetrics | null>(null);
   const [sellerMetricsLoading, setSellerMetricsLoading] = useState(false);
+  const [merchantRadiusOpen, setMerchantRadiusOpen] = useState(false);
   const [showFlashDealSource, setShowFlashDealSource] = useState(false);
   const [isRegionalFallback, setIsRegionalFallback] = useState(false);
   const [storiesHydrating, setStoriesHydrating] = useState(true);
   const [serviceProStats, setServiceProStats] = useState<ServiceProDashboardStats | null>(null);
   const [serviceProStatsLoading, setServiceProStatsLoading] = useState(false);
   const [proAvailable, setProAvailable] = useState(false);
+  const [serviceProRecord, setServiceProRecord] = useState<ServiceProvider | null>(null);
+  const [showAddServiceModal, setShowAddServiceModal] = useState(false);
+  const [skillFormProvider, setSkillFormProvider] = useState<ServiceProvider | null>(null);
+  const [showProLeadsDrawer, setShowProLeadsDrawer] = useState(false);
+  const [proLeadsFilter, setProLeadsFilter] = useState<'all' | 'quotes'>('all');
   const [activePostKey, setActivePostKey] = useState<string | null>(null);
 
   const pageRef = useRef(0);
@@ -152,11 +191,54 @@ export default function FeedScreen() {
 
   const isSeller = checkSellerLike(profile?.role);
   const isMerchantSeller = checkMerchantSeller(profile?.role);
-  const isServiceProvider = checkServiceProvider(profile?.role);
+  const isServiceProvider = profile?.role === 'service_provider';
   const isBuyer = isBuyerRole(profile?.role);
-  const roleBadge = getRoleBadgeLabel(profile?.role);
+
+  // #region agent log
+  useEffect(() => {
+    agentDebugLog({
+      hypothesisId: 'H2',
+      location: 'index.tsx:mountRoleGate',
+      message: 'Home mount — create+ gate + spark composer state',
+      data: {
+        role: profile?.role ?? null,
+        isServiceProvider,
+        isMerchantSeller,
+        isBuyer,
+        createPlusVisible: !!(isServiceProvider || isMerchantSeller),
+        showSparkComposer,
+        showCreateMenu,
+        showSparksViewer,
+        sparkCount: sparks.length,
+      },
+    });
+  }, [profile?.role, isServiceProvider, isMerchantSeller, isBuyer, showSparkComposer, showCreateMenu, showSparksViewer, sparks.length]);
+  // #endregion
+
   const postCacheVersion = usePostInteractionsStore(s => s.version);
   const setInteractionsRefreshing = usePostInteractionsStore(s => s.setRefreshing);
+
+  /** Always remount composer so a stuck blank sheet can be reopened. */
+  const openSparkComposer = useCallback((fromCreateMenu = false) => {
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'H6',
+      location: 'index.tsx:openSparkComposer',
+      message: 'openSparkComposer invoked',
+      data: { fromCreateMenu, showSparkComposer, sparkComposerKey },
+    });
+    // #endregion
+    const open = () => {
+      setSparkComposerKey(k => k + 1);
+      setShowSparkComposer(true);
+    };
+    if (fromCreateMenu) {
+      setShowCreateMenu(false);
+      InteractionManager.runAfterInteractions(open);
+      return;
+    }
+    open();
+  }, [showSparkComposer, sparkComposerKey]);
 
   const postsViewabilityConfig = useRef({ itemVisiblePercentThreshold: 70 }).current;
   const onPostsViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -188,6 +270,12 @@ export default function FeedScreen() {
 
       if (mode === 'following' && isBuyer) {
         rows = await getFollowingFeed(profile.id, p, followedRef.current);
+        if (reset && p === 0 && rows.length === 0) {
+          const fallback = await loadHomeFeed(profile, { page: 0, mode: 'nearby' });
+          rows = fallback.posts;
+          setIsRegionalFallback(fallback.isRegionalFallback);
+          effectiveRadiusRef.current = fallback.effectiveRadiusKm;
+        }
       } else if (reset) {
         const result = await loadHomeFeed(profile, {
           page: p,
@@ -210,12 +298,16 @@ export default function FeedScreen() {
         rows = result.posts;
       }
 
-      setPosts(prev => (reset ? rows : [...prev, ...rows]));
+      const safeRows = sanitizeFeedPosts(rows as any[]);
+      setPosts(prev => (reset ? safeRows : [...prev, ...safeRows]));
       setHasMore(rows.length >= 10);
       pageRef.current = p + 1;
     } catch (e) {
       console.error(e);
-      if (reset) setPosts([]);
+      // Keep existing posts on soft refresh failure — avoid wiping to a blank/black feed.
+      if (reset) {
+        setPosts(prev => (Array.isArray(prev) ? prev : []));
+      }
       setHasMore(false);
     } finally {
       loadingRef.current = false;
@@ -223,6 +315,21 @@ export default function FeedScreen() {
       setLoadingMore(false);
     }
   }, [profile, isBuyer, hasMore]);
+
+  useEffect(() => {
+    if (!posts.length) {
+      setActivePostKey(null);
+      return;
+    }
+    const firstKey = posts[0].feed_item_id ?? posts[0].id;
+    setActivePostKey(prev => {
+      if (!prev) return firstKey;
+      const stillVisible = posts.some((p: { id: string; feed_item_id?: string }) => (
+        (p.feed_item_id ?? p.id) === prev
+      ));
+      return stillVisible ? prev : firstKey;
+    });
+  }, [posts]);
 
   // Initial + mode change load — do NOT depend on unstable callbacks
   useEffect(() => {
@@ -233,10 +340,28 @@ export default function FeedScreen() {
 
   const loadSparks = useCallback(async () => {
     if (!profile) return;
-    const shopFilter = isBuyer && followedShopIds.length ? followedShopIds : undefined;
-    const rows = await getUnifiedSparksFeed(profile.id, 30, 0, shopFilter);
-    setSparks(rows as SparkItem[]);
+    try {
+      const shopFilter = isBuyer && followedShopIds.length ? followedShopIds : undefined;
+      const rows = await getUnifiedSparksFeed(profile.id, 30, 0, shopFilter);
+      setSparks(sanitizeSparkItems(rows as any[]) as SparkItem[]);
+    } catch (e) {
+      console.warn('[home] loadSparks failed', e);
+    }
   }, [profile, isBuyer, followedShopIds]);
+
+  /** Background re-fetch after publish — never clears the visible layout on error. */
+  const refreshHomeFeedSafely = useCallback(async () => {
+    try {
+      await load(true);
+    } catch (e) {
+      console.warn('[home] post-publish feed refresh failed', e);
+    }
+    try {
+      await loadSparks();
+    } catch (e) {
+      console.warn('[home] post-publish sparks refresh failed', e);
+    }
+  }, [load, loadSparks]);
 
   // Social extras once (non-blocking)
   useEffect(() => {
@@ -256,7 +381,7 @@ export default function FeedScreen() {
       ]);
       if (cancelled) return;
       setStories(st);
-      setSparks(sparkRows as SparkItem[]);
+      setSparks(sanitizeSparkItems(sparkRows as any[]) as SparkItem[]);
       setStoriesHydrating(false);
       loadNotifications(profile.id).catch(() => {});
       if (isBuyer) loadCart(profile.id).catch(() => {});
@@ -274,15 +399,32 @@ export default function FeedScreen() {
     if (!profile || !isMerchantSeller) return;
     setSellerMetricsLoading(true);
     try {
-      const [shop, metrics] = await Promise.all([
-        getShopByOwner(profile.id),
-        getSellerDashboardMetrics(profile.id),
-      ]);
-      setSellerShopId(shop?.id ?? null);
+      const metrics = await fetchSellerCommandMetrics(profile.id);
       setSellerMetrics(metrics);
-      setHasShop(!!shop);
-    } catch {
+      setSellerShopId(metrics.shop?.id ?? null);
+      setHasShop(!!metrics.shop);
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: 'H10',
+        location: 'index.tsx:loadSellerDashboard',
+        message: 'Seller shop resolved',
+        data: { hasShop: !!metrics.shop, shopId: metrics.shop?.id ?? null },
+        runId: 'post-fix',
+      });
+      // #endregion
+    } catch (e: any) {
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: 'H10',
+        location: 'index.tsx:loadSellerDashboard:error',
+        message: 'Seller shop load failed',
+        data: { errorMessage: e?.message ?? String(e) },
+        runId: 'post-fix',
+      });
+      // #endregion
       setSellerMetrics(null);
+      setSellerShopId(null);
+      setHasShop(false);
     } finally {
       setSellerMetricsLoading(false);
     }
@@ -292,11 +434,25 @@ export default function FeedScreen() {
     if (!profile || !isServiceProvider) return;
     setServiceProStatsLoading(true);
     try {
-      const stats = await getServiceProDashboardStats(profile.id);
+      const seed = {
+        name: profile.name,
+        city: profile.city,
+        lat: profile.lat,
+        lng: profile.lng,
+        phone: profile.phone,
+      };
+      const stats = await getServiceProDashboardStats(profile.id, seed);
       setServiceProStats(stats);
       setProAvailable(stats.is_available);
+      const record = await ensureServiceProviderRecord(profile.id, seed);
+      setServiceProRecord(record);
+      setSkillFormProvider(prev => prev ?? record);
     } catch {
-      setServiceProStats(null);
+      setServiceProStats({
+        active_requests: 0,
+        quote_inquiries: 0,
+        is_available: false,
+      });
     } finally {
       setServiceProStatsLoading(false);
     }
@@ -306,13 +462,80 @@ export default function FeedScreen() {
     if (!profile) return;
     setProAvailable(next);
     try {
-      await setServiceProviderAvailability(profile.id, next);
+      const updated = await setServiceProviderAvailability(profile.id, next, {
+        name: profile.name,
+        city: profile.city,
+        lat: profile.lat,
+        lng: profile.lng,
+        phone: profile.phone,
+      });
+      if (updated) setServiceProRecord(updated);
       setServiceProStats(prev => (prev ? { ...prev, is_available: next } : prev));
     } catch {
       setProAvailable(!next);
       Alert.alert('Availability', 'Could not update your status. Please try again.');
     }
   }, [profile]);
+
+  const provisionServicePro = useCallback(async () => {
+    if (!profile || !isServiceProvider) return null;
+    try {
+      const record = await ensureServiceProviderRecord(profile.id, {
+        name: profile.name,
+        city: profile.city,
+        lat: profile.lat,
+        lng: profile.lng,
+        phone: profile.phone,
+      });
+      setServiceProRecord(record);
+      return record;
+    } catch {
+      return null;
+    }
+  }, [profile, isServiceProvider]);
+
+  const openListServiceModal = useCallback(async () => {
+    // #region agent log
+    fetch('http://127.0.0.1:7579/ingest/9f87a31d-926e-4ca8-ab20-bba1a00c7458',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e7c6d'},body:JSON.stringify({sessionId:'7e7c6d',runId:'skill-modal-debug',hypothesisId:'H1',location:'index.tsx:openListServiceModal:entry',message:'openListServiceModal called',data:{hasProfile:!!profile,role:profile?.role??null,isServiceProvider,hasServiceProRecord:!!serviceProRecord},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    if (!profile || !isServiceProvider) return;
+    const seed = {
+      name: profile.name ?? '',
+      city: profile.city ?? '',
+      lat: profile.lat,
+      lng: profile.lng,
+      phone: profile.phone,
+    };
+    setShowAddServiceModal(true);
+    // #region agent log
+    fetch('http://127.0.0.1:7579/ingest/9f87a31d-926e-4ca8-ab20-bba1a00c7458',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e7c6d'},body:JSON.stringify({sessionId:'7e7c6d',runId:'skill-modal-debug',hypothesisId:'H5',location:'index.tsx:openListServiceModal:visibleSet',message:'setShowAddServiceModal(true)',data:{usedCachedRecord:!!serviceProRecord},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      const record = serviceProRecord ?? await ensureServiceProviderRecord(profile.id, seed);
+      setServiceProRecord(record);
+      setSkillFormProvider(record);
+      // #region agent log
+      fetch('http://127.0.0.1:7579/ingest/9f87a31d-926e-4ca8-ab20-bba1a00c7458',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e7c6d'},body:JSON.stringify({sessionId:'7e7c6d',runId:'skill-modal-debug',hypothesisId:'H3',location:'index.tsx:openListServiceModal:success',message:'provider record ready',data:{recordId:record?.id??null,businessName:record?.business_name??null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } catch (e: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7579/ingest/9f87a31d-926e-4ca8-ab20-bba1a00c7458',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e7c6d'},body:JSON.stringify({sessionId:'7e7c6d',runId:'skill-modal-debug',hypothesisId:'H2',location:'index.tsx:openListServiceModal:error',message:'ensureServiceProviderRecord failed',data:{errorMessage:e?.message??String(e),errorCode:e?.code??null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setShowAddServiceModal(false);
+      Alert.alert(
+        'Profile setup',
+        e?.message || 'Could not load your service provider profile. Please try again.',
+      );
+    }
+  }, [profile, isServiceProvider, serviceProRecord]);
+
+  useEffect(() => {
+    if (!profile || !isServiceProvider) return;
+    void (async () => {
+      await provisionServicePro();
+      await loadServiceProDashboard();
+    })();
+  }, [profile?.id, isServiceProvider, provisionServicePro, loadServiceProDashboard]);
 
   // When coming from the bottom-center "+" tab, open the seller create menu.
   useEffect(() => {
@@ -341,10 +564,31 @@ export default function FeedScreen() {
     void loadSellerDashboard();
   }, [profile?.id, isMerchantSeller, loadSellerDashboard]);
 
+  // Replace placeholder "Current Location" with a real place name from GPS / reverse geocode.
   useEffect(() => {
-    if (!profile || !isServiceProvider) return;
-    void loadServiceProDashboard();
-  }, [profile?.id, isServiceProvider, loadServiceProDashboard]);
+    if (!profile?.id) return;
+    const city = (profile.city || '').trim();
+    const needsName = !city || /^current location$/i.test(city) || /^your area$/i.test(city);
+    if (!needsName) return;
+    let cancelled = false;
+    (async () => {
+      const result = await detectFeedLocation();
+      if (cancelled || !result.ok) return;
+      const nextCity = result.geo.city?.trim();
+      if (!nextCity || /^current location$/i.test(nextCity)) return;
+      await persistFeedLocation(profile.id, {
+        city: nextCity,
+        lat: result.geo.lat,
+        lng: result.geo.lng,
+      });
+      updateLocalProfile({
+        city: nextCity,
+        lat: result.geo.lat,
+        lng: result.geo.lng,
+      });
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [profile?.id, profile?.city, updateLocalProfile]);
 
   // Auto-refresh the feed every 60 seconds so the home page stays fresh.
   useEffect(() => {
@@ -363,6 +607,102 @@ export default function FeedScreen() {
       setFeedMode('following');
     }
   }, [followedShopIds.length, isSeller, profile]);
+
+  // Inject top-rated shops discovery when Following is empty / low-content
+  useEffect(() => {
+    if (!profile || !isBuyer || isServiceProvider) {
+      setTopRatedShops([]);
+      return;
+    }
+    if (feedMode !== 'following') {
+      setTopRatedShops([]);
+      return;
+    }
+    const lowContent = posts.length < 4;
+    if (!lowContent || profile.lat == null || profile.lng == null) {
+      if (!lowContent) setTopRatedShops([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const shops = await fetchTopRatedLocalShops({
+          lat: profile.lat!,
+          lng: profile.lng!,
+          radiusKm: profile.radius_km ?? 10,
+          city: profile.city,
+          excludeIds: followedShopIds,
+          limit: 10,
+        });
+        if (!cancelled) setTopRatedShops(shops);
+      } catch {
+        if (!cancelled) setTopRatedShops([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [
+    profile?.id, profile?.lat, profile?.lng, profile?.radius_km, profile?.city,
+    isBuyer, isServiceProvider, feedMode, posts.length, followedShopIds,
+  ]);
+
+  const handleDetectFeedLocation = useCallback(async () => {
+    setDetectingLocation(true);
+    try {
+      const result = await detectFeedLocation();
+      if (!result.ok) {
+        Toast.show({ type: 'error', text1: 'Location unavailable', text2: result.message });
+        return;
+      }
+      await persistFeedLocation(profile?.id, {
+        city: result.geo.city,
+        lat: result.geo.lat,
+        lng: result.geo.lng,
+      });
+      updateLocalProfile({
+        city: result.geo.city,
+        lat: result.geo.lat,
+        lng: result.geo.lng,
+      });
+      Toast.show({
+        type: 'success',
+        text1: 'Location updated',
+        text2: `Showing posts near ${result.geo.city}.`,
+      });
+      setLocationSheetOpen(false);
+      void load(true);
+    } finally {
+      setDetectingLocation(false);
+    }
+  }, [profile?.id, updateLocalProfile, load]);
+
+  const handleSaveFeedRadius = useCallback(async (radius_km: number) => {
+    if (!profile) return;
+    await persistFeedLocation(profile.id, { radius_km });
+    updateLocalProfile({ radius_km });
+    void hapticLight();
+    Toast.show({
+      type: 'success',
+      text1: 'Coverage updated',
+      text2: `Nearby feed now uses ${radius_km} km.`,
+      visibilityTime: 1600,
+    });
+    // profile.radius_km effect will also reload; call load for instant refresh
+    void load(true);
+  }, [profile, updateLocalProfile, load]);
+
+  const handleSaveMerchantRadius = useCallback(async (radius_km: SellerRadiusKm) => {
+    if (!profile) return;
+    await persistSellerTargetRadius(profile.id, radius_km);
+    updateLocalProfile({ radius_km });
+    void hapticLight();
+    Toast.show({
+      type: 'success',
+      text1: 'Broadcast zone updated',
+      text2: `Targeting customers within ${radius_km} km.`,
+      visibilityTime: 1800,
+    });
+    void Promise.all([load(true), loadSellerDashboard()]);
+  }, [profile, updateLocalProfile, load, loadSellerDashboard]);
 
   // Search UI removed — feed posts are always shown as loaded.
 
@@ -395,19 +735,60 @@ export default function FeedScreen() {
 
   const filteredPosts = posts;
 
+  /** Seller/pro home "Candid moments" strip — only this user's Moments. Full feed stays on Moments tab. */
+  const ownSparks = useMemo(() => {
+    if (!profile?.id) return [];
+    const shopId = sellerShopId;
+    const proId = serviceProRecord?.id ?? null;
+    return sparks.filter(s => {
+      if (s.author_id && s.author_id === profile.id) return true;
+      if (shopId && s.shop_id && s.shop_id === shopId) return true;
+      if (proId && (s as any).service_provider_id && (s as any).service_provider_id === proId) return true;
+      return false;
+    });
+  }, [sparks, profile?.id, sellerShopId, serviceProRecord?.id]);
+
   const isOwnShopPost = useCallback((post: { shop_id?: string }) => (
     !!isMerchantSeller && !!sellerShopId && post.shop_id === sellerShopId
   ), [isMerchantSeller, sellerShopId]);
 
   const handlePostDeleted = useCallback((postId: string) => {
     setPosts(prev => prev.filter(p => p.id !== postId));
+    setSparks(prev => prev.filter(s => {
+      if (s.id === postId) return false;
+      if (s.id === `post-spark-${postId}`) return false;
+      return true;
+    }));
+  }, []);
+
+  const handleMomentDeleted = useCallback((sparkId: string) => {
+    setSparks(prev => prev.filter(s => s.id !== sparkId));
+    if (sparkId.startsWith('post-spark-')) {
+      const postId = sparkId.slice('post-spark-'.length);
+      setPosts(prev => prev.filter(p => p.id !== postId));
+    }
+  }, []);
+
+  const openStoryGroup = useCallback((items: Story[], startIndex = 0) => {
+    const pages = (items ?? []).filter(s => !!s?.id && !!s?.media_url && !s?.deleted_at);
+    if (!pages.length) return;
+    const idx = Math.min(Math.max(0, startIndex), pages.length - 1);
+    setViewStoryPages(pages);
+    setViewStoryStartIndex(idx);
+    setViewStory(pages[idx] ?? null);
   }, []);
 
   const handleFlashDealSource = async (choice: MediaSourceChoice) => {
     setShowFlashDealSource(false);
+    // Wait for MediaSourceSheet Modal to fully dismiss before camera/gallery (Android).
+    await new Promise<void>(resolve => {
+      InteractionManager.runAfterInteractions(() => resolve());
+    });
+    await new Promise(r => setTimeout(r, Platform.OS === 'android' ? 320 : 80));
+
     if (choice === 'gallery') {
-      await pickMedia(true);
-      setShowStoryComposer(true);
+      const picked = await pickMedia(true);
+      if (picked) setShowStoryComposer(true);
       return;
     }
     const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -422,162 +803,613 @@ export default function FeedScreen() {
     });
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    setStoryMedia({ uri: asset.uri, type: (asset.type === 'video' ? 'video' : 'image') as 'image' | 'video' });
+    const looksVideo = asset.type === 'video'
+      || /\.(mp4|mov|m4v|webm)(\?|$)/i.test(asset.uri || '')
+      || ((asset as { mimeType?: string }).mimeType ?? '').startsWith('video/');
+    setStoryMedia({ uri: asset.uri, type: (looksVideo ? 'video' : 'image') as 'image' | 'video' });
     setShowStoryComposer(true);
   };
 
-  const pickMedia = async (forStory: boolean) => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      quality: 0.8,
-      allowsEditing: true,
+  /** Returns true when media was selected into storyMedia. */
+  const pickMedia = async (forStory: boolean): Promise<boolean> => {
+    try {
+      if (Platform.OS !== 'web') {
+        const current = await ImagePicker.getMediaLibraryPermissionsAsync();
+        let status = current.status;
+        const canAskAgain = (current as { canAskAgain?: boolean }).canAskAgain !== false;
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H9',
+          location: 'index.tsx:pickMedia',
+          message: 'Story/flash gallery permission',
+          data: { forStory, status, canAskAgain },
+          runId: 'post-fix',
+        });
+        // #endregion
+        if (status !== 'granted' && !canAskAgain) {
+          Alert.alert(
+            'Photo library blocked',
+            'Enable Photos / Media permission in Settings to pick media for Stories and Moments.',
+            [
+              { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          );
+          return false;
+        }
+        if (status !== 'granted') {
+          const requested = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          status = requested.status;
+        }
+        if (status !== 'granted') {
+          Alert.alert(
+            'Photo library access needed',
+            'Allow Vedastya to access your photos and videos to continue.',
+            [
+              { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+              { text: 'OK', style: 'cancel' },
+            ],
+          );
+          return false;
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        quality: 0.8,
+        allowsEditing: Platform.OS === 'ios',
+      });
+      if (result.canceled || !result.assets[0]) return false;
+      const asset = result.assets[0];
+      const looksVideo = asset.type === 'video'
+        || /\.(mp4|mov|m4v|webm)(\?|$)/i.test(asset.uri || '')
+        || (asset.mimeType ?? '').startsWith('video/');
+      const media = { uri: asset.uri, type: (looksVideo ? 'video' : 'image') as 'image' | 'video' };
+      if (forStory) setStoryMedia(media);
+      return true;
+    } catch (e: any) {
+      Alert.alert('Could not open gallery', e?.message || 'Please try again.');
+      return false;
+    }
+  };
+
+  /**
+   * ImagePicker must not launch while a Modal is visible (Android often returns
+   * canceled / blank). Dismiss the story sheet, pick, then reopen.
+   */
+  const pickStoryMediaSafely = async () => {
+    setShowStoryComposer(false);
+    await new Promise<void>(resolve => {
+      InteractionManager.runAfterInteractions(() => resolve());
     });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    const media = { uri: asset.uri, type: (asset.type === 'video' ? 'video' : 'image') as 'image' | 'video' };
-    if (forStory) setStoryMedia(media);
+    await new Promise(r => setTimeout(r, Platform.OS === 'android' ? 350 : 100));
+    const picked = await pickMedia(true);
+    setShowStoryComposer(true);
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'H-story',
+      location: 'index.tsx:pickStoryMediaSafely',
+      message: 'Story media pick finished',
+      data: { picked, platform: Platform.OS },
+      runId: 'story-fix',
+    });
+    // #endregion
+  };
+
+  const openStoryComposer = () => {
+    setShowCreateMenu(false);
+    setShowFlashDealSource(false);
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => setShowStoryComposer(true), Platform.OS === 'android' ? 280 : 60);
+    });
   };
 
   const resolveMyShop = async () => {
     if (!profile) return null;
     const shop = await getShopByOwner(profile.id);
     if (!shop) {
-      Alert.alert('Create your shop first', 'You need a shop before posting stories or Sparks.', [
+      Alert.alert('Create your shop first', 'You need a shop before posting stories or Moments.', [
         { text: 'Create Shop', onPress: () => router.push('/seller/shop' as any) },
         { text: 'Cancel', style: 'cancel' },
       ]);
       return null;
     }
+    setSellerShopId(shop.id);
+    setHasShop(true);
     return shop;
   };
 
+  const resolveMyServiceProvider = async () => {
+    if (!profile || !isServiceProvider) return null;
+    if (serviceProRecord) return serviceProRecord;
+    return provisionServicePro();
+  };
+
+  const resolveContentPublisher = async () => {
+    if (isServiceProvider) {
+      const pro = await resolveMyServiceProvider();
+      if (!pro) {
+        Alert.alert('Profile setup', 'Could not load your service provider profile. Please try again.');
+        return null;
+      }
+      return { kind: 'service_provider' as const, pro };
+    }
+    const shop = await resolveMyShop();
+    if (!shop) return null;
+    return { kind: 'shop' as const, shop };
+  };
+
   const uploadMediaUrl = async (uri: string, type: 'image' | 'video', folder: string) => {
-    const response = await fetch(uri);
-    const blob = await response.blob();
-    const mime = blob.type || (type === 'video' ? 'video/mp4' : 'image/jpeg');
-    const ext = mime.includes('webm')
-      ? 'webm'
-      : mime.includes('png')
-        ? 'png'
-        : type === 'video'
-          ? 'mp4'
-          : 'jpg';
+    agentDebugLog({
+      hypothesisId: 'H11',
+      location: 'index.tsx:uploadMediaUrl:start',
+      message: 'Uploading spark/story media',
+      data: { type, folder, uriScheme: uri.split(':')[0] ?? null },
+      runId: 'post-fix',
+    });
+    const { prepareMediaForUpload } = await import('../../lib/prepareMediaUpload');
+    const prepared = await prepareMediaForUpload(uri, type);
+    const mime = type === 'video' ? 'video/mp4' : 'image/jpeg';
+    const ext = type === 'video' ? 'mp4' : 'jpg';
     const path = `${folder}/${profile!.id}/${Date.now()}.${ext}`;
-    return uploadImage('cityconnect', path, blob, mime);
+    const url = await uploadMediaFromUri(prepared.uri, path, mime);
+    agentDebugLog({
+      hypothesisId: 'H11',
+      location: 'index.tsx:uploadMediaUrl:done',
+      message: 'Media upload finished',
+      data: {
+        type,
+        folder,
+        hasUrl: !!url,
+        mime,
+        compressed: prepared.compressed,
+        finalBytes: prepared.finalBytes,
+      },
+      runId: 'post-fix',
+    });
+    return url;
+  };
+
+  /**
+   * Instagram-style Spark publish:
+   * 1) Dismiss composer immediately
+   * 2) Show home upload progress bar
+   * 3) Upload + insert in background
+   * 4) Refresh feeds on success
+   */
+  const submitSpark = (payload: SparkPublishPayload) => {
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'H4',
+      location: 'index.tsx:submitSpark:entry',
+      message: 'submitSpark called',
+      data: {
+        hasProfile: !!profile?.id,
+        role: profile?.role ?? null,
+        mediaType: payload?.media?.type ?? null,
+        uriScheme: payload?.media?.uri ? String(payload.media.uri).split(':')[0] : null,
+      },
+      runId: 'publish-debug',
+    });
+    // #endregion
+    if (!profile?.id) {
+      Alert.alert('Sign in required', 'Please sign in as a seller or service pro to publish a Moment.');
+      return;
+    }
+
+    const startJob = useUploadProgressStore.getState().startJob;
+    const setProgress = useUploadProgressStore.getState().setProgress;
+    const completeJob = useUploadProgressStore.getState().completeJob;
+    const failJob = useUploadProgressStore.getState().failJob;
+
+    const jobId = startJob({
+      kind: 'spark',
+      caption: payload.caption || 'Posting Moment…',
+      thumbnailUri: payload.coverUri || payload.media.uri,
+    });
+
+    // Instantly return to Home
+    setShowSparkComposer(false);
+    setFeedView('posts');
+    setShowSparksViewer(false);
+
+    void (async () => {
+      try {
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H4',
+          location: 'index.tsx:submitSpark:start',
+          message: 'Moment publish started',
+          data: {
+            profileId: profile.id,
+            role: profile.role ?? null,
+            mediaType: payload.media?.type ?? null,
+            uriScheme: String(payload.media?.uri || '').split(':')[0] || null,
+            hasAudio: !!payload.audio_url,
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+        setProgress(jobId, 8, 'uploading');
+        const publisher = await resolveContentPublisher();
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H4',
+          location: 'index.tsx:submitSpark:publisher',
+          message: 'Publisher resolved',
+          data: {
+            kind: publisher?.kind ?? null,
+            shopId: publisher?.kind === 'shop' ? publisher.shop.id : null,
+            proId: publisher?.kind === 'service_provider' ? publisher.pro.id : null,
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+        if (!publisher) {
+          throw new Error('Could not resolve your shop or service profile. Please try again.');
+        }
+
+        setProgress(jobId, 12, 'uploading');
+        const mediaUrl = await uploadSparkMediaFromUri(
+          payload.media.uri,
+          profile.id,
+          payload.media.type === 'video' ? 'video' : 'image',
+          (pct) => {
+            setProgress(jobId, Math.max(12, Math.min(70, Math.round(pct))), 'uploading');
+          },
+        );
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H1',
+          location: 'index.tsx:submitSpark:uploaded',
+          message: 'Moment media uploaded',
+          data: {
+            hasUrl: !!mediaUrl,
+            urlHost: (() => { try { return new URL(mediaUrl).host; } catch { return null; } })(),
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+        setProgress(jobId, 72, 'saving');
+
+        const captionParts = [payload.caption.trim()];
+        if (payload.location.trim()) captionParts.push(`📍 ${payload.location.trim()}`);
+        if (payload.audio_title?.trim()) {
+          captionParts.push(
+            `🎵 ${payload.audio_title.trim()}${payload.audio_artist ? ` • ${payload.audio_artist.trim()}` : ''}`,
+          );
+        }
+
+        setProgress(jobId, 88, 'saving');
+        const created = await createReel({
+          ...(publisher.kind === 'shop'
+            ? { shop_id: publisher.shop.id }
+            : { service_provider_id: publisher.pro.id }),
+          author_id: profile.id,
+          media_url: mediaUrl,
+          caption: captionParts.filter(Boolean).join('\n'),
+          tags: payload.tags,
+          product_id: publisher.kind === 'shop' ? (payload.productId ?? null) : null,
+          audio_track_id: payload.audio_track_id ?? null,
+          audio_title: payload.audio_title ?? null,
+          audio_artist: payload.audio_artist ?? null,
+          audio_url: payload.audio_url ?? null,
+          audio_start_time: payload.audio_start_time ?? 0,
+          audio_volume_balance: payload.audio_volume_balance ?? { video: 0, music: 100 },
+        });
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H2',
+          location: 'index.tsx:submitSpark:created',
+          message: 'Moment reel insert ok',
+          data: { reelId: created?.id ?? null, alsoStory: !!payload.also_share_to_story },
+          runId: 'publish-debug',
+        });
+        // #endregion
+
+        let storyShared = false;
+        if (payload.also_share_to_story) {
+          setProgress(jobId, 92, 'saving');
+          try {
+            const story = await createStory({
+              ...(publisher.kind === 'shop'
+                ? { shop_id: publisher.shop.id }
+                : { service_provider_id: publisher.pro.id }),
+              author_id: profile.id,
+              media_url: mediaUrl,
+              media_type: payload.media.type === 'video' ? 'video' : 'image',
+              caption: payload.caption.trim() || undefined,
+              audio_track_id: payload.audio_track_id ?? created.audio_track_id ?? null,
+              audio_title: payload.audio_title ?? created.audio_title ?? null,
+              audio_artist: payload.audio_artist ?? created.audio_artist ?? null,
+              audio_url: payload.audio_url ?? created.audio_url ?? null,
+              audio_start_time: payload.audio_start_time ?? created.audio_start_time ?? 0,
+              audio_volume_balance: payload.audio_volume_balance
+                ?? created.audio_volume_balance
+                ?? ((payload.audio_url || created.audio_url) ? { video: 0, music: 100 } : null),
+            });
+            // #region agent log
+            agentDebugLog({
+              hypothesisId: 'H-story-audio',
+              location: 'index.tsx:submitSpark:storyCreated',
+              message: 'Story created from Moment share',
+              data: {
+                storyId: story?.id ?? null,
+                hasAudio: !!(story as any)?.audio_url,
+                audioTitle: (story as any)?.audio_title ?? null,
+              },
+              runId: 'publish-debug',
+            });
+            // #endregion
+            storyShared = true;
+            const displayName = publisher.kind === 'shop' ? publisher.shop.name : publisher.pro.business_name;
+            const displayLogo = publisher.kind === 'shop' ? publisher.shop.logo_url : null;
+            setStories(prev => [
+              { ...story, shop_name: displayName, shop_logo: displayLogo },
+              ...prev.filter(s => s.id !== story.id),
+            ]);
+          } catch (storyErr: any) {
+            // Moment already published — don't fail the whole job for Story
+            console.warn('[submitSpark] Story share failed', storyErr?.message ?? storyErr);
+            Toast.show({
+              type: 'info',
+              text1: 'Moment published',
+              text2: 'Could not add to Story — try sharing Story separately.',
+            });
+          }
+        }
+
+        setProgress(jobId, 98, 'saving');
+        const displayName = publisher.kind === 'shop' ? publisher.shop.name : publisher.pro.business_name;
+        const displayLogo = publisher.kind === 'shop' ? publisher.shop.logo_url : null;
+        setSparks(prev => sanitizeSparkItems([
+          { ...created, shop_name: displayName, shop_logo: displayLogo },
+          ...prev,
+        ] as any[]) as SparkItem[]);
+        completeJob(jobId);
+        Toast.show({
+          type: 'success',
+          text1: storyShared ? 'Moment + Story shared!' : 'Moment Published Successfully!',
+          text2: storyShared
+            ? 'Live in Moments and your Story ring.'
+            : 'Your Moment is live at the top of Moments.',
+        });
+        addNotification(storyShared ? 'Moment and Story published.' : 'Moment published.');
+        void refreshHomeFeedSafely();
+      } catch (e: any) {
+        const msg = e?.message || 'Could not publish Moment. Check your connection and try again.';
+        failJob(jobId, msg);
+        Alert.alert('Could not publish Moment', msg);
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H1',
+          location: 'index.tsx:submitSpark:error',
+          message: 'Moment publish failed',
+          data: {
+            errorMessage: msg,
+            errorCode: e?.code ?? e?.statusCode ?? null,
+            errorName: e?.name ?? null,
+            stageHint: /upload|storage|media|empty|Bucket/i.test(msg)
+              ? 'upload'
+              : /Permission|RLS|publisher|shop|service/i.test(msg)
+                ? 'rls_or_publisher'
+                : 'other',
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+      }
+    })();
+  };
+
+  const submitCreatePost = (payload: CreatePostPayload) => {
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'H5',
+      location: 'index.tsx:submitCreatePost:entry',
+      message: 'submitCreatePost called',
+      data: {
+        hasProfile: !!profile?.id,
+        role: profile?.role ?? null,
+        textLen: payload?.text?.length ?? 0,
+      },
+      runId: 'publish-debug',
+    });
+    // #endregion
+    if (!profile?.id) {
+      Alert.alert('Sign in required', 'Please sign in to publish a post.');
+      return;
+    }
+
+    const startJob = useUploadProgressStore.getState().startJob;
+    const setProgress = useUploadProgressStore.getState().setProgress;
+    const completeJob = useUploadProgressStore.getState().completeJob;
+    const failJob = useUploadProgressStore.getState().failJob;
+
+    const jobId = startJob({
+      kind: 'post',
+      caption: payload.text.slice(0, 80) || 'Posting…',
+      thumbnailUri: null,
+    });
+
+    setShowTextPostComposer(false);
+
+    void (async () => {
+      try {
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H5',
+          location: 'index.tsx:submitCreatePost:start',
+          message: 'Text post publish started',
+          data: {
+            profileId: profile.id,
+            role: profile.role ?? null,
+            textLen: payload.text?.length ?? 0,
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+        setProgress(jobId, 15, 'uploading');
+        const publisher = await resolveContentPublisher();
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H4',
+          location: 'index.tsx:submitCreatePost:publisher',
+          message: 'Post publisher resolved',
+          data: {
+            kind: publisher?.kind ?? null,
+            shopId: publisher?.kind === 'shop' ? publisher.shop.id : null,
+            proId: publisher?.kind === 'service_provider' ? publisher.pro.id : null,
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+        if (!publisher) {
+          throw new Error('Could not resolve your shop or service profile. Please try again.');
+        }
+        setProgress(jobId, 55, 'saving');
+        const meta = {
+          text: payload.text,
+          fontStyle: payload.fontStyle,
+          background: payload.background,
+          textColor: payload.textColor,
+        };
+        await createPost({
+          ...(publisher.kind === 'shop'
+            ? { shop_id: publisher.shop.id }
+            : { service_provider_id: publisher.pro.id }),
+          caption: `__TEXT_CARD__${JSON.stringify(meta)}`,
+          media_urls: [],
+          media_type: 'image',
+        });
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H2',
+          location: 'index.tsx:submitCreatePost:created',
+          message: 'Post insert ok',
+          data: { kind: publisher.kind },
+          runId: 'publish-debug',
+        });
+        // #endregion
+        setProgress(jobId, 96, 'saving');
+        completeJob(jobId);
+        Toast.show({
+          type: 'success',
+          text1: 'Post Published Successfully!',
+          text2: 'Your update is live on Home.',
+        });
+        addNotification(isServiceProvider ? 'Update shared from your profile.' : 'Update shared from your shop.');
+        void refreshHomeFeedSafely();
+      } catch (e: any) {
+        const msg = e?.message || 'Could not publish post. Please try again.';
+        failJob(jobId, msg);
+        Alert.alert('Could not share update', msg);
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H2',
+          location: 'index.tsx:submitCreatePost:error',
+          message: 'Post publish failed',
+          data: {
+            errorMessage: msg,
+            errorCode: e?.code ?? null,
+            stageHint: /Permission|RLS|publisher|shop|service/i.test(msg)
+              ? 'rls_or_publisher'
+              : 'other',
+          },
+          runId: 'publish-debug',
+        });
+        // #endregion
+      }
+    })();
   };
 
   const submitStory = async () => {
     if (!storyMedia && !storyDraft.trim()) {
-      Alert.alert('Add media or caption');
+      Alert.alert('Add media or caption', 'Pick a photo/video or write a short caption before sharing.');
       return;
     }
+    if (!profile) return;
     setPosting(true);
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'H-story',
+      location: 'index.tsx:submitStory:start',
+      message: 'Story publish started',
+      data: {
+        hasMedia: !!storyMedia,
+        mediaType: storyMedia?.type ?? null,
+        hasCaption: !!storyDraft.trim(),
+        sellerShopId,
+        role: profile.role ?? null,
+      },
+      runId: 'story-fix',
+    });
+    // #endregion
     try {
-      const shop = await resolveMyShop();
-      if (!shop) return;
+      const publisher = await resolveContentPublisher();
+      if (!publisher) {
+        // #region agent log
+        agentDebugLog({
+          hypothesisId: 'H-story',
+          location: 'index.tsx:submitStory:noPublisher',
+          message: 'Story publish aborted — no shop/pro',
+          data: { sellerShopId, role: profile.role ?? null },
+          runId: 'story-fix',
+        });
+        // #endregion
+        return;
+      }
       let mediaUrl = storyMedia?.uri ?? '';
       let mediaType: 'image' | 'video' = storyMedia?.type ?? 'image';
       if (storyMedia) {
         mediaUrl = await uploadMediaUrl(storyMedia.uri, storyMedia.type, 'stories');
       } else {
-        // Text-only story: use a data placeholder color block via empty and caption
         mediaUrl = 'https://placehold.co/600x900/141420/FF5722/png?text=Story';
         mediaType = 'image';
       }
       const created = await createStory({
-        shop_id: shop.id,
-        author_id: profile!.id,
+        ...(publisher.kind === 'shop'
+          ? { shop_id: publisher.shop.id }
+          : { service_provider_id: publisher.pro.id }),
+        author_id: profile.id,
         media_url: mediaUrl,
         media_type: mediaType,
         caption: storyDraft.trim(),
       });
-      setStories(prev => [created, ...prev]);
+      const displayName = publisher.kind === 'shop' ? publisher.shop.name : publisher.pro.business_name;
+      const logo = publisher.kind === 'shop'
+        ? (publisher.shop.logo_url ?? null)
+        : (publisher.pro.portfolio_photos?.[0] ?? profile.avatar_url ?? null);
+      setStories(prev => [{ ...created, shop_name: displayName, shop_logo: logo }, ...prev]);
       setStoryDraft('');
       setStoryMedia(null);
       setShowStoryComposer(false);
       addNotification('Story shared — followers will see it for 24 hours.');
-    } catch (e: any) {
-      Alert.alert('Could not post story', e.message || 'Try again after running the social migration SQL.');
-    } finally {
-      setPosting(false);
-    }
-  };
-
-  const submitSpark = async (payload: {
-    media: { uri: string; type: 'image' | 'video' };
-    caption: string;
-    tags: string[];
-    location: string;
-    productId?: string | null;
-    audio_track_id?: string | null;
-    audio_title?: string | null;
-    audio_artist?: string | null;
-    audio_url?: string | null;
-  }) => {
-    setPosting(true);
-    try {
-      const shop = await resolveMyShop();
-      if (!shop) return;
-      const mediaUrl = await uploadMediaUrl(payload.media.uri, payload.media.type, 'reels');
-      const captionParts = [payload.caption.trim()];
-      if (payload.location.trim()) captionParts.push(`📍 ${payload.location.trim()}`);
-      if (payload.audio_title?.trim()) {
-        captionParts.push(`🎵 ${payload.audio_title.trim()}${payload.audio_artist ? ` • ${payload.audio_artist.trim()}` : ''}`);
-      }
-      const created = await createReel({
-        shop_id: shop.id,
-        author_id: profile!.id,
-        media_url: mediaUrl,
-        caption: captionParts.filter(Boolean).join('\n'),
-        tags: payload.tags,
-        product_id: payload.productId ?? null,
-        audio_track_id: payload.audio_track_id ?? null,
-        audio_title: payload.audio_title ?? null,
-        audio_artist: payload.audio_artist ?? null,
-        audio_url: payload.audio_url ?? null,
+      Toast.show({
+        type: 'success',
+        text1: 'Story shared',
+        text2: 'Visible for 24 hours in your Stories ring.',
+        visibilityTime: 2000,
       });
-      setSparks(prev => [{ ...created, shop_name: shop.name, shop_logo: shop.logo_url }, ...prev]);
-      setShowSparkComposer(false);
-      setFeedView('sparks');
-      addNotification('Spark published.');
-    } catch (e: any) {
-      Alert.alert('Could not post Spark', e.message || 'Try again after running the social migration SQL.');
-    } finally {
-      setPosting(false);
-    }
-  };
-
-  const submitTextPost = async () => {
-    if (!textPostDraft.trim()) {
-      Alert.alert('Add a short update', 'Write something about your shop before posting.');
-      return;
-    }
-    setPosting(true);
-    try {
-      const shop = await resolveMyShop();
-      if (!shop) return;
-      const meta = {
-        text: textPostDraft.trim(),
-        fontStyle: textFontStyle,
-        background: textBackground,
-        textColor,
-      };
-      await createPost({
-        shop_id: shop.id,
-        caption: `__TEXT_CARD__${JSON.stringify(meta)}`,
-        media_urls: [],
-        media_type: 'image',
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: 'H-story',
+        location: 'index.tsx:submitStory:success',
+        message: 'Story published',
+        data: { storyId: created?.id ?? null, mediaType },
+        runId: 'story-fix',
       });
-      setTextPostDraft('');
-      setTextFontStyle('classic');
-      setTextBackground('sunset');
-      setTextColor('white');
-      setShowTextPostComposer(false);
-      addNotification('Update shared from your shop.');
-      // Reload nearby feed so the new update appears with proper distance + shop fields.
-      load(true);
+      // #endregion
     } catch (e: any) {
-      Alert.alert('Could not share update', e.message || 'Try again after running the social migration SQL.');
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: 'H-story',
+        location: 'index.tsx:submitStory:error',
+        message: 'Story publish failed',
+        data: { errorMessage: e?.message ?? String(e) },
+        runId: 'story-fix',
+      });
+      // #endregion
+      Alert.alert('Could not post story', e?.message || 'Please try again.');
     } finally {
       setPosting(false);
     }
@@ -585,13 +1417,8 @@ export default function FeedScreen() {
 
   const handleAddToCart = async (productId: string, shopId: string) => {
     if (!profile) return;
-    try {
-      await addItem(profile.id, productId, shopId, 1);
-      addNotification('Added to cart');
-      Alert.alert('Added', 'Product added to your cart.');
-    } catch (e: any) {
-      Alert.alert('Cart', e.message || 'Could not add — ensure cart migration is applied.');
-    }
+    await addItem(profile.id, productId, shopId, 1);
+    addNotification('Added to cart');
   };
 
   if (!profile) {
@@ -602,68 +1429,168 @@ export default function FeedScreen() {
     );
   }
 
+  const serviceProHero = isServiceProvider && feedView === 'posts' ? (
+    <ServiceProHeaderHero
+      stats={serviceProStats}
+      loading={serviceProStatsLoading}
+      isAvailable={proAvailable}
+      providerProfileId={profile.id}
+      provider={serviceProRecord}
+      rating={serviceProRecord?.avg_rating ?? 0}
+      reviewCount={serviceProRecord?.total_reviews ?? 0}
+      onToggleAvailability={value => void handleToggleProAvailability(value)}
+      onListService={() => void openListServiceModal()}
+      onOpenActiveRequests={() => {
+        setProLeadsFilter('all');
+        setShowProLeadsDrawer(true);
+      }}
+      onOpenQuoteInquiries={() => {
+        setProLeadsFilter('quotes');
+        setShowProLeadsDrawer(true);
+      }}
+      onStatsChange={setServiceProStats}
+    />
+  ) : null;
+
   return (
     <View style={ff.root}>
-      <SafeAreaView edges={['top']} style={{ backgroundColor: Colors.bg }}>
-        <View style={[ff.header, { paddingTop: (insets.top ?? 0) + 12 }]}>
-          <View style={ff.headerLeft}>
-            {isSeller && (
-              <TouchableOpacity onPress={() => setShowCreateMenu(true)} style={ff.postPlusBtn} accessibilityRole="button">
+      <UploadProgressBar onDismissSuccess={() => { void refreshHomeFeedSafely(); }} />
+
+      {isBuyer && !isServiceProvider ? (
+        <FeedHeader
+          city={profile?.city}
+          radiusKm={profile?.radius_km}
+          feedMode={feedMode}
+          notificationCount={notifications.length}
+          followingBadge={followedShopIds.length}
+          onOpenLocation={() => setLocationSheetOpen(true)}
+          onChangeMode={setFeedMode}
+          showModeSwitcher={feedView === 'posts'}
+        />
+      ) : isMerchantSeller ? (
+        <SellerHeader
+          city={profile?.city}
+          radiusKm={profile?.radius_km}
+          notificationCount={notifications.length}
+          onOpenTargetZone={() => setMerchantRadiusOpen(true)}
+          leftSlot={
+            <SpringPressable
+              onPress={() => {
+                // #region agent log
+                agentDebugLog({hypothesisId:'H2',location:'index.tsx:createPlus',message:'Create + button tapped',data:{isServiceProvider,isMerchantSeller,role:profile?.role??null}});
+                // #endregion
+                setShowCreateMenu(true);
+              }}
+              style={ff.postPlusBtn}
+              pressedScale={0.92}
+            >
+              <Text style={ff.postPlusIcon}>+</Text>
+            </SpringPressable>
+          }
+        />
+      ) : (
+        <Header
+          city={profile?.city}
+          radiusKm={profile?.radius_km}
+          notificationCount={notifications.length}
+          leftSlot={
+            isServiceProvider ? (
+              <SpringPressable
+                onPress={() => {
+                  // #region agent log
+                  agentDebugLog({hypothesisId:'H2',location:'index.tsx:createPlus',message:'Create + button tapped',data:{isServiceProvider,isMerchantSeller,role:profile?.role??null}});
+                  // #endregion
+                  setShowCreateMenu(true);
+                }}
+                style={ff.postPlusBtn}
+                pressedScale={0.92}
+              >
                 <Text style={ff.postPlusIcon}>+</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <View style={ff.headerCenter}>
-            <Text style={ff.brand}>Vedastya</Text>
-            <Text style={ff.location}>
-              📍 {profile?.city} · {profile?.radius_km} km · {roleBadge}
-            </Text>
-          </View>
-
-          <View style={ff.headerRight}>
-            <TouchableOpacity onPress={() => setShowNotifications(true)}>
-              <Text style={ff.icon}>🔔</Text>
-              {notifications.length > 0 && <View style={ff.notifDot} />}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </SafeAreaView>
-
-      {isMerchantSeller ? <MarketTicker city={profile?.city} /> : null}
+              </SpringPressable>
+            ) : undefined
+          }
+        />
+      )}
 
       {/* Search UI removed */}
 
-      {isBuyer && feedView === 'posts' && (
-        <View style={ff.feedModeRow}>
-          <TouchableOpacity onPress={() => setFeedMode('nearby')} style={[ff.feedModeChip, feedMode === 'nearby' && ff.feedModeChipActive]}>
-            <Text style={[ff.feedModeText, feedMode === 'nearby' && ff.feedModeTextActive]}>Nearby</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setFeedMode('following')} style={[ff.feedModeChip, feedMode === 'following' && ff.feedModeChipActive]}>
-            <Text style={[ff.feedModeText, feedMode === 'following' && ff.feedModeTextActive]}>Following</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      <View style={ff.contentTabs}>
-        <TouchableOpacity
+      <GlassSurface style={ff.contentTabs} radius={20} intensity={22}>
+        <SpringPressable
           style={[ff.contentTab, feedView === 'posts' && ff.contentTabActive]}
           onPress={() => setFeedView('posts')}
-          activeOpacity={0.85}
+          accessibilityRole="tab"
         >
           <Text style={[ff.contentTabText, feedView === 'posts' && ff.contentTabTextActive]}>Posts</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[ff.contentTab, feedView === 'sparks' && ff.contentTabActive]}
-          onPress={() => setFeedView('sparks')}
-          activeOpacity={0.85}
+        </SpringPressable>
+        <SpringPressable
+          style={[ff.contentTab, (feedView === 'sparks' || showSparksViewer) && ff.contentTabActive]}
+          onPress={() => {
+            // #region agent log
+            agentDebugLog({hypothesisId:'H4',location:'index.tsx:sparksTab',message:'Moments tab opened viewer',data:{sparkCount:sparks.length}});
+            // #endregion
+            setFeedView('posts');
+            setShowSparksViewer(true);
+          }}
+          accessibilityRole="tab"
         >
-          <Text style={[ff.contentTabText, feedView === 'sparks' && ff.contentTabTextActive]}>Sparks</Text>
-        </TouchableOpacity>
-      </View>
+          <Text style={[ff.contentTabText, (feedView === 'sparks' || showSparksViewer) && ff.contentTabTextActive]}>Moments</Text>
+        </SpringPressable>
+      </GlassSurface>
 
-      {feedView === 'sparks' ? (
-        <SparksFeed sparks={sparks} />
+      {isMerchantSeller ? (
+        <SellerMasonryFeed
+          posts={filteredPosts}
+          userId={profile!.id}
+          sellerShopId={sellerShopId}
+          loading={loading}
+          loadingMore={loadingMore}
+          refreshing={refreshing}
+          activePostKey={activePostKey}
+          isRegionalFallback={isRegionalFallback}
+          extraDataKey={`${postCacheVersion}`}
+          refreshControl={pullRefreshControl}
+          scrollHandlers={scrollHandlers}
+          onRefresh={onRefresh}
+          onEndReached={onEndReached}
+          onAdjustRadius={() => setMerchantRadiusOpen(true)}
+          onDeleted={handlePostDeleted}
+          onViewableItemsChanged={onPostsViewableItemsChanged}
+          viewabilityConfig={postsViewabilityConfig}
+          onRetry={() => { void refreshHomeFeedSafely(); }}
+          listHeader={(
+            <View>
+              <SellerHeaderHero
+                metrics={sellerMetrics}
+                loading={sellerMetricsLoading}
+                unreadEnquiries={sellerMetrics?.new_leads ?? 0}
+                onFlashDeal={() => setShowFlashDealSource(true)}
+                onAddProduct={() => router.push('/seller/upload' as any)}
+                onPostSpark={() => {
+                  // #region agent log
+                  agentDebugLog({hypothesisId:'H5',location:'index.tsx:onPostSpark',message:'SellerHeaderHero Post Moment tapped',data:{sellerShopId}});
+                  // #endregion
+                  openSparkComposer(false);
+                }}
+                onViewEnquiries={() => router.push('/seller/enquiries' as any)}
+              />
+              <SellerSparksCarousel
+                stories={stories}
+                sparks={ownSparks}
+                storiesHydrating={storiesHydrating}
+                avatarUrl={sellerMetrics?.shop?.logo_url ?? profile?.avatar_url}
+                shopName={sellerMetrics?.shop?.name}
+                currentUserId={profile?.id}
+                currentShopId={sellerShopId}
+                onAddStory={openStoryComposer}
+                onOpenStoryGroup={openStoryGroup}
+                onOpenSparks={() => {
+                  setFeedView('posts');
+                  setShowSparksViewer(true);
+                }}
+              />
+            </View>
+          )}
+        />
       ) : loading && posts.length === 0 ? (
         <ScrollView
           style={{ flex: 1 }}
@@ -671,114 +1598,82 @@ export default function FeedScreen() {
           {...scrollHandlers}
           refreshControl={pullRefreshControl}
         >
+          {serviceProHero}
           <FeedHydrationSkeleton />
         </ScrollView>
       ) : (
+      <ErrorBoundary onRefresh={() => { void refreshHomeFeedSafely(); }}>
+      <View style={{ flex: 1 }}>
       <FlashList
-        style={{ flex: 1 }}
         data={filteredPosts}
-        extraData={`${filteredPosts.length}-${postCacheVersion}-${sellerShopId}-${activePostKey}`}
-        keyExtractor={item => item.feed_item_id ?? item.id}
-        numColumns={isMerchantSeller ? 2 : 1}
-        estimatedItemSize={isMerchantSeller ? 300 : 520}
+        extraData={`${filteredPosts.length}-${postCacheVersion}-${sellerShopId}-${activePostKey}-${serviceProRecord?.id ?? ''}-${serviceProRecord?.business_name ?? ''}-${serviceProRecord?.portfolio_photos?.length ?? 0}-${proAvailable}`}
+        keyExtractor={(item, index) => safeFeedItemKey(item, index)}
+        numColumns={1}
+        estimatedItemSize={520}
         drawDistance={WINDOW_HEIGHT * 2}
         onViewableItemsChanged={onPostsViewableItemsChanged}
         viewabilityConfig={postsViewabilityConfig}
         {...scrollHandlers}
-        renderItem={({ item }) => (
-          <PostCard
-            post={item}
-            userId={profile!.id}
-            isBuyer={!!isBuyer}
-            isSellerOwner={isOwnShopPost(item)}
-            layout={isMerchantSeller ? 'masonry' : 'feed'}
-            isMediaActive={activePostKey === (item.feed_item_id ?? item.id)}
-            onAddToCart={handleAddToCart}
-            onDeleted={handlePostDeleted}
-          />
-        )}
+        renderItem={({ item }) => {
+          if (!item?.id) return null;
+          return (
+            <PostCard
+              post={item}
+              userId={profile!.id}
+              isBuyer={!!isBuyer}
+              isSellerOwner={isOwnShopPost(item)}
+              layout="feed"
+              isMediaActive={
+                activePostKey == null
+                || activePostKey === (item.feed_item_id ?? item.id)
+              }
+              onAddToCart={handleAddToCart}
+              onDeleted={handlePostDeleted}
+            />
+          );
+        }}
         refreshControl={pullRefreshControl}
         onEndReached={onEndReached}
         onEndReachedThreshold={0.4}
         ListFooterComponent={loadingMore ? <ActivityIndicator color={Colors.orange} style={{ marginVertical: 16 }} /> : null}
         ListHeaderComponent={
           <View>
+            {serviceProHero}
+
             {Platform.OS === 'web' && (
               <TouchableOpacity onPress={onRefresh} style={ff.webRefresh} disabled={refreshing}>
                 <Text style={ff.webRefreshText}>{refreshing ? 'Refreshing…' : '↓ Tap to refresh feed'}</Text>
               </TouchableOpacity>
             )}
 
-            {isMerchantSeller ? (
-              <SellerHeaderHero
-                metrics={sellerMetrics}
-                loading={sellerMetricsLoading}
-                unreadEnquiries={sellerMetrics?.new_leads ?? 0}
-                onFlashDeal={() => setShowFlashDealSource(true)}
-                onAddProduct={() => router.push('/seller/upload' as any)}
-                onPostSpark={() => setShowSparkComposer(true)}
-                onViewEnquiries={() => router.push('/seller/enquiries' as any)}
-              />
-            ) : null}
-
-            {isServiceProvider ? (
-              <ServiceProHeaderHero
-                stats={serviceProStats}
-                loading={serviceProStatsLoading}
-                isAvailable={proAvailable}
-                onToggleAvailability={value => void handleToggleProAvailability(value)}
-                onListService={() => router.push('/(tabs)/services' as any)}
-              />
-            ) : null}
-
             {isRegionalFallback ? (
-              <FeedRegionalBanner onAdjustRadius={() => router.push('/(tabs)/profile' as any)} />
+              <FeedRegionalBanner onAdjustRadius={() => setLocationSheetOpen(true)} />
             ) : null}
 
-            <View style={ff.stories}>
-              {storiesHydrating ? (
-                <FeedStoriesSkeleton />
-              ) : (
-                <>
-              {isSeller && (
-                <TouchableOpacity style={sf.story} onPress={() => setShowStoryComposer(true)}>
-                  <View style={[sf.storyRing, { borderStyle: 'dashed' }]}>
-                    <View style={sf.storyAvatar}><Text style={sf.storyPlusIcon}>+</Text></View>
-                  </View>
-                  <Text style={sf.storyName}>Your Story</Text>
-                </TouchableOpacity>
-              )}
-              {stories.map(story => (
-                <TouchableOpacity key={story.id} style={sf.story} onPress={() => setViewStory(story)}>
-                  <View style={sf.storyRing}>
-                    <View style={sf.storyAvatar}>
-                      {story.media_url
-                        ? <Image source={{ uri: story.media_url }} style={sf.storyImg} />
-                        : <Text style={sf.storyEmoji}>✨</Text>}
-                    </View>
-                  </View>
-                  <Text style={sf.storyName} numberOfLines={1}>{story.shop_name ?? 'Shop'}</Text>
-                </TouchableOpacity>
-              ))}
-              {!isSeller && stories.length === 0 && (
-                <Text style={ff.storyHint}>Follow shops to see their stories here</Text>
-              )}
-                </>
-              )}
-            </View>
+            {isBuyer && feedMode === 'following' && topRatedShops.length > 0 ? (
+              <TopRatedShopsCarousel
+                city={profile?.city || ''}
+                shops={topRatedShops}
+                onOpenShop={shop => router.push(`/shop/${shop.id}` as any)}
+                onSwitchNearby={() => setFeedMode('nearby')}
+              />
+            ) : null}
 
-            {sparks.length > 0 && feedView === 'posts' && (
-              <TouchableOpacity style={ff.reelsPromo} onPress={() => setFeedView('sparks')} activeOpacity={0.9}>
-                <Text style={ff.reelsPromoBadge}>SPARKS</Text>
-                <Text style={ff.reelsPromoText}>Watch {sparks.length} short video{sparks.length === 1 ? '' : 's'} →</Text>
-              </TouchableOpacity>
-            )}
-
-            {notifications.length > 0 && isBuyer && (
-              <TouchableOpacity style={ff.noticeBar} onPress={() => setShowNotifications(true)}>
-                <Text style={ff.noticeText}>🔔 {notifications[0]}</Text>
-              </TouchableOpacity>
-            )}
+            <SparksCarousel
+              stories={stories}
+              sparks={isSeller ? ownSparks : sparks}
+              storiesHydrating={storiesHydrating}
+              isSeller={!!isSeller}
+              currentUserId={profile?.id}
+              currentShopId={sellerShopId}
+              onAddStory={openStoryComposer}
+              onOpenStoryGroup={openStoryGroup}
+              onOpenSparks={() => {
+                setFeedView('posts');
+                setShowSparksViewer(true);
+              }}
+              onDiscoverShops={() => router.push('/(tabs)/shops' as any)}
+            />
           </View>
         }
         ListEmptyComponent={
@@ -786,15 +1681,26 @@ export default function FeedScreen() {
             <Text style={ff.emptyEmoji}>{feedMode === 'following' ? '🫶' : '🛍️'}</Text>
             <Text style={ff.emptyText}>
               {feedMode === 'following'
-                ? 'Follow shops to get their posts, stories and updates here — like Instagram.'
-                : 'No posts nearby yet. Try a larger radius or follow shops.'}
+                ? 'No posts from followed shops yet. Switch to Nearby or follow more local shops.'
+                : 'No posts nearby yet. Try a larger radius in Profile, or pull down to refresh.'}
             </Text>
           </View>
         }
         showsVerticalScrollIndicator={false}
+        decelerationRate="fast"
         contentContainerStyle={{ paddingBottom: 80, paddingTop: 4 }}
       />
+      </View>
+      </ErrorBoundary>
       )}
+
+      <MerchantRadiusSheet
+        visible={merchantRadiusOpen}
+        city={profile?.city || ''}
+        currentRadius={profile?.radius_km ?? 5}
+        onSaveRadius={km => { void handleSaveMerchantRadius(km); }}
+        onClose={() => setMerchantRadiusOpen(false)}
+      />
 
       <MediaSourceSheet
         visible={showFlashDealSource}
@@ -805,30 +1711,40 @@ export default function FeedScreen() {
         onSelect={choice => void handleFlashDealSource(choice)}
       />
 
-      <Modal transparent visible={showNotifications} animationType="fade" onRequestClose={() => setShowNotifications(false)}>
-        <Pressable style={ff.modalBackdrop} onPress={() => setShowNotifications(false)}>
-          <View style={ff.modalSheet}>
-            <View style={ff.modalHandle} />
-            <View style={ff.modalHeaderRow}>
-              <Text style={ff.modalTitle}>Updates from followed shops</Text>
-              <TouchableOpacity onPress={() => clearNotifications()}><Text style={ff.modalClear}>Clear</Text></TouchableOpacity>
-            </View>
-            {notifications.length === 0
-              ? <Text style={ff.modalEmpty}>No updates yet. Follow shops to get notified.</Text>
-              : notifications.map((item, index) => (
-                <View key={`${item}-${index}`} style={ff.noticeItem}>
-                  <Text style={ff.noticeItemText}>{item}</Text>
-                </View>
-              ))}
-          </View>
-        </Pressable>
-      </Modal>
-
-      {/* Seller create menu */}
+      {/* Seller / service pro create menu */}
       <Modal transparent visible={showCreateMenu} animationType="fade" onRequestClose={() => setShowCreateMenu(false)}>
-        <Pressable style={ff.modalBackdrop} onPress={() => setShowCreateMenu(false)}>
-          <View style={ff.modalSheet}>
+        <Pressable
+          style={ff.modalBackdrop}
+          onPress={() => {
+            void hapticLight();
+            setShowCreateMenu(false);
+          }}
+        >
+          <Pressable onPress={() => {}}>
+          <GlassSurface style={ff.modalSheet} radius={24} overflow="visible">
             <View style={ff.modalHandle} />
+            {isServiceProvider ? (
+              <ProCreateMenuSheet
+                onListService={() => {
+                  setShowCreateMenu(false);
+                  void openListServiceModal();
+                }}
+                onStory={() => {
+                  openStoryComposer();
+                }}
+                onSpark={() => {
+                  // #region agent log
+                  agentDebugLog({hypothesisId:'H1',location:'index.tsx:onSpark',message:'Create menu Moment tapped (service pro)',data:{isServiceProvider:true,showCreateMenu:true}});
+                  // #endregion
+                  openSparkComposer(true);
+                }}
+                onTextUpdate={() => {
+                  setShowCreateMenu(false);
+                  setShowTextPostComposer(true);
+                }}
+              />
+            ) : (
+              <>
             <Text style={ff.modalTitle}>Share from your shop</Text>
             <TouchableOpacity
               style={[ff.createRow, hasShop === false && ff.createRowHighlight]}
@@ -863,8 +1779,7 @@ export default function FeedScreen() {
             <TouchableOpacity
               style={ff.createRow}
               onPress={() => {
-                setShowCreateMenu(false);
-                setShowStoryComposer(true);
+                openStoryComposer();
               }}
             >
               <Text style={ff.createIcon}>✨</Text>
@@ -876,14 +1791,16 @@ export default function FeedScreen() {
             <TouchableOpacity
               style={ff.createRow}
               onPress={() => {
-                setShowCreateMenu(false);
-                setShowSparkComposer(true);
+                // #region agent log
+                agentDebugLog({hypothesisId:'H1',location:'index.tsx:sellerSparkRow',message:'Create menu Moment tapped (seller)',data:{isMerchantSeller:true,hasShop}});
+                // #endregion
+                openSparkComposer(true);
               }}
             >
               <Text style={ff.createIcon}>🎬</Text>
               <View style={ff.createTextWrap}>
-                <Text style={ff.createTitle}>Spark</Text>
-                <Text style={ff.createSub}>Short vertical video for the Sparks tab.</Text>
+                <Text style={ff.createTitle}>Moment</Text>
+                <Text style={ff.createSub}>Short vertical video for the Moments tab.</Text>
               </View>
             </TouchableOpacity>
             <TouchableOpacity
@@ -899,28 +1816,50 @@ export default function FeedScreen() {
                 <Text style={ff.createSub}>Share news, offers or reminders without photos.</Text>
               </View>
             </TouchableOpacity>
-          </View>
+              </>
+            )}
+          </GlassSurface>
+          </Pressable>
         </Pressable>
       </Modal>
 
-      <Modal transparent visible={!!viewStory} animationType="fade" onRequestClose={() => setViewStory(null)}>
-        <Pressable style={ff.storyViewer} onPress={() => setViewStory(null)}>
-          {viewStory && (
-            <View style={ff.storyViewerInner}>
-              <Image source={{ uri: viewStory.media_url }} style={ff.storyFull} resizeMode="cover" />
-              <Text style={ff.storyCaption}>{viewStory.shop_name}: {viewStory.caption}</Text>
-            </View>
-          )}
-        </Pressable>
-      </Modal>
+      <ErrorBoundary onRefresh={() => {
+        setViewStory(null);
+        setViewStoryPages([]);
+      }}>
+        <StoryViewerModal
+          visible={viewStory != null}
+          stories={viewStoryPages.length ? viewStoryPages : (viewStory ? [viewStory] : [])}
+          startIndex={viewStoryStartIndex}
+          currentUserId={profile?.id}
+          onClose={() => {
+            setViewStory(null);
+            setViewStoryPages([]);
+          }}
+          onDeleted={(storyId) => {
+            setStories(prev => prev.filter(s => s.id !== storyId));
+            setViewStoryPages(prev => {
+              const next = prev.filter(s => s.id !== storyId);
+              if (!next.length) setViewStory(null);
+              return next;
+            });
+          }}
+        />
+      </ErrorBoundary>
 
       <Modal transparent visible={showStoryComposer} animationType="slide" onRequestClose={() => setShowStoryComposer(false)}>
         <View style={ff.modalBackdrop}>
-          <View style={ff.modalSheet}>
+          <View style={ff.storySheet}>
             <View style={ff.modalHandle} />
             <Text style={ff.modalTitle}>Create Story</Text>
-            <TouchableOpacity style={ff.mediaPick} onPress={() => pickMedia(true)}>
-              <Text style={ff.mediaPickText}>{storyMedia ? '✓ Media selected — tap to change' : '📷 Pick photo or short video'}</Text>
+            <TouchableOpacity
+              style={ff.mediaPickSolid}
+              activeOpacity={0.85}
+              onPress={() => { void pickStoryMediaSafely(); }}
+            >
+              <Text style={ff.mediaPickText}>
+                {storyMedia ? '✓ Media selected — tap to change' : '📷 Pick photo or short video'}
+              </Text>
             </TouchableOpacity>
             <TextInput
               value={storyDraft}
@@ -930,123 +1869,128 @@ export default function FeedScreen() {
               placeholderTextColor={Colors.dim}
               style={ff.modalInput}
             />
-            <TouchableOpacity onPress={submitStory} style={ff.primaryBtn} disabled={posting}>
+            <TouchableOpacity
+              onPress={() => { void submitStory(); }}
+              disabled={posting}
+              activeOpacity={0.88}
+              style={[ff.primaryBtn, posting && ff.primaryBtnDisabled]}
+            >
               {posting ? <ActivityIndicator color="#fff" /> : <Text style={ff.primaryBtnText}>Share Story</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setShowStoryComposer(false);
+                setStoryMedia(null);
+                setStoryDraft('');
+              }}
+              style={ff.storyCancel}
+            >
+              <Text style={ff.storyCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      <SparkComposer
+      <LocationRadiusSheet
+        visible={locationSheetOpen}
+        city={profile?.city || ''}
+        currentRadius={profile?.radius_km ?? 5}
+        detecting={detectingLocation}
+        onDetectLocation={() => { void handleDetectFeedLocation(); }}
+        onSaveRadius={km => { void handleSaveFeedRadius(km); }}
+        onClose={() => setLocationSheetOpen(false)}
+      />
+
+      <SparksReelsViewer
+        visible={showSparksViewer}
+        sparks={sparks}
+        canCreate={!!(isServiceProvider || isMerchantSeller)}
+        onDeleted={handleMomentDeleted}
+        onCreateSpark={() => {
+          // #region agent log
+          agentDebugLog({
+            hypothesisId: 'H8',
+            location: 'index.tsx:sparksViewerCreate',
+            message: 'Create Moment from immersive Moments viewer',
+            data: { sparkCount: sparks.length, showSparksViewer: true },
+            runId: 'publish-debug',
+          });
+          // #endregion
+          // Close viewer fully before opening composer — nested Modals break on Android
+          setShowSparksViewer(false);
+          setFeedView('posts');
+          InteractionManager.runAfterInteractions(() => {
+            openSparkComposer(false);
+          });
+        }}
+        onClose={() => {
+          // #region agent log
+          agentDebugLog({hypothesisId:'H4',location:'index.tsx:sparksViewerClose',message:'Moments viewer closed',data:{sparkCount:sparks.length}});
+          // #endregion
+          setShowSparksViewer(false);
+          setFeedView('posts');
+        }}
+      />
+
+      <UploadSparkModal
+        key={sparkComposerKey}
         visible={showSparkComposer}
-        posting={posting}
         defaultLocation={profile?.city ?? ''}
         shopId={sellerShopId}
-        onClose={() => setShowSparkComposer(false)}
+        serviceProviderId={serviceProRecord?.id ?? null}
+        userId={profile?.id ?? null}
+        onClose={() => {
+          agentDebugLog({hypothesisId:'H3',location:'index.tsx:uploadClose',message:'UploadSparkModal onClose',data:{showSparkComposer}});
+          setShowSparkComposer(false);
+        }}
         onPublish={submitSpark}
       />
 
-      {/* Text-only shop update */}
-      <Modal transparent visible={showTextPostComposer} animationType="slide" onRequestClose={() => setShowTextPostComposer(false)}>
-        <View style={ff.modalBackdrop}>
-          <View style={ff.modalSheet}>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <View style={ff.modalHandle} />
-              <Text style={ff.modalTitle}>Share shop update</Text>
-              <View style={[ff.textCardPreview, { backgroundColor: getTextBackground(textBackground) }]}>
-                <TextInput
-                  value={textPostDraft}
-                  onChangeText={setTextPostDraft}
-                  multiline
-                  maxLength={280}
-                  placeholder="What’s new?"
-                  placeholderTextColor={`${getTextColor(textColor)}99`}
-                  style={[
-                    ff.textCardInput,
-                    getTextFontStyle(textFontStyle),
-                    { color: getTextColor(textColor) },
-                  ]}
-                />
-                <Text style={[ff.textCount, { color: getTextColor(textColor) }]}>{textPostDraft.length}/280</Text>
-              </View>
+      <CreatePostModal
+        visible={showTextPostComposer}
+        isServiceProvider={isServiceProvider}
+        onClose={() => setShowTextPostComposer(false)}
+        onPublish={submitCreatePost}
+      />
 
-              <Text style={ff.textOptionLabel}>BACKGROUND</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ff.colorOptionRow}>
-                {TEXT_CARD_BACKGROUNDS.map(option => (
-                  <TouchableOpacity
-                    key={option.id}
-                    accessibilityLabel={`${option.id} background`}
-                    onPress={() => setTextBackground(option.id)}
-                    style={[
-                      ff.backgroundSwatch,
-                      { backgroundColor: option.color },
-                      textBackground === option.id && ff.optionSelected,
-                    ]}
-                  >
-                    {textBackground === option.id && <Text style={ff.swatchCheck}>✓</Text>}
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+      <AddServiceSkillModal
+        visible={showAddServiceModal}
+        provider={skillFormProvider ?? serviceProRecord}
+        onClose={() => {
+          setShowAddServiceModal(false);
+        }}
+        onSaved={provider => {
+          setServiceProRecord(provider);
+          setSkillFormProvider(provider);
+          setProAvailable(provider.is_available);
+          setServiceProStats(prev => (prev
+            ? { ...prev, is_available: provider.is_available }
+            : { active_requests: 0, quote_inquiries: 0, is_available: provider.is_available }));
+          addNotification('Service listing updated successfully.');
+          Toast.show({
+            type: 'success',
+            text1: 'Service listing updated successfully.',
+          });
+        }}
+      />
 
-              <Text style={ff.textOptionLabel}>FONT STYLE</Text>
-              <View style={ff.textStyleRow}>
-                {([
-                  ['classic', 'Aa', 'Classic'],
-                  ['bold', 'B', 'Bold'],
-                  ['elegant', 'Ag', 'Elegant'],
-                  ['typewriter', 'Tt', 'Type'],
-                ] as const).map(([id, sample, label]) => (
-                  <TouchableOpacity
-                    key={id}
-                    style={[ff.textStyleChip, textFontStyle === id && ff.textStyleChipActive]}
-                    onPress={() => setTextFontStyle(id)}
-                  >
-                    <Text style={[ff.fontSample, getTextFontStyle(id)]}>{sample}</Text>
-                    <Text style={ff.textStyleChipText}>{label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={ff.textOptionLabel}>FONT COLOR</Text>
-              <View style={ff.colorOptionRow}>
-                {TEXT_CARD_COLORS.map(option => (
-                  <TouchableOpacity
-                    key={option.id}
-                    accessibilityLabel={`${option.id} font color`}
-                    onPress={() => setTextColor(option.id)}
-                    style={[
-                      ff.fontColorSwatch,
-                      { backgroundColor: option.color },
-                      textColor === option.id && ff.optionSelected,
-                    ]}
-                  />
-                ))}
-              </View>
-              <TouchableOpacity onPress={submitTextPost} style={ff.primaryBtn} disabled={posting}>
-                {posting ? <ActivityIndicator color="#fff" /> : <Text style={ff.primaryBtnText}>Post update</Text>}
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      {isServiceProvider && (
+        <ProLeadsDrawer
+          visible={showProLeadsDrawer}
+          providerProfileId={profile.id}
+          filter={proLeadsFilter}
+          onClose={() => setShowProLeadsDrawer(false)}
+        />
+      )}
     </View>
   );
 }
 
-const ff = StyleSheet.create({
+const ff = createDynamicStyles((Colors) => ({
   root: { flex: 1, backgroundColor: Colors.bg },
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: Colors.border, backgroundColor: Colors.bg },
-  headerLeft: { width: 48, alignItems: 'flex-start' },
-  headerCenter: { flex: 1, alignItems: 'center' },
-  headerRight: { width: 48, alignItems: 'flex-end' },
-  brand: { fontSize: 28, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.orange, letterSpacing: -0.5, textAlign: 'center', textShadowColor: '#00000022', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 },
-  location: { fontSize: 11, fontFamily: Fonts.bodySemiBold, color: Colors.sub, marginTop: 2, textAlign: 'center' },
-  headerIcons: { flexDirection: 'row', gap: 16, alignItems: 'center' },
-  icon: { fontSize: 22 },
   postPlusBtn: { backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', padding: 4 },
   postPlusIcon: { fontSize: 28, color: Colors.text, fontWeight: '300' },
-  notifDot: { position: 'absolute', top: 0, right: -2, width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.red },
   searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.card, borderRadius: 24, marginHorizontal: 16, marginTop: 12, paddingHorizontal: 12, paddingVertical: 8 },
   searchIcon: { fontSize: 16, marginRight: 8 },
   searchInput: { flex: 1, color: Colors.text, fontSize: 14 },
@@ -1058,67 +2002,156 @@ const ff = StyleSheet.create({
   feedModeRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 10 },
   webRefresh: { alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border },
   webRefreshText: { color: Colors.sub, fontSize: 12, fontWeight: '600' },
-  feedModeChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border2 },
-  feedModeChipActive: { backgroundColor: Colors.orange, borderColor: Colors.orange },
+  feedModeChip: {
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 20,
+    backgroundColor: GLASS.bg,
+    borderWidth: 1,
+    borderColor: GLASS.border,
+  },
+  feedModeChipActive: { backgroundColor: Colors.orange + '2E', borderColor: Colors.orange + 'CC' },
   feedModeText: { color: Colors.sub, fontSize: 12, fontWeight: '700' },
-  feedModeTextActive: { color: Colors.white },
+  feedModeTextActive: { color: Colors.orange },
   contentTabs: {
     flexDirection: 'row',
     marginHorizontal: 16,
     marginTop: 8,
     marginBottom: 4,
-    backgroundColor: Colors.surface,
-    borderRadius: 14,
     padding: 4,
-    borderWidth: 1,
-    borderColor: Colors.border,
   },
   contentTab: {
     flex: 1,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 16,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 42,
   },
   contentTabActive: {
-    backgroundColor: Colors.card,
-    ...Platform.select({
-      web: { boxShadow: '0 2px 8px rgba(0,0,0,0.25)' } as object,
-      default: { elevation: 2 },
-    }),
+    backgroundColor: Colors.orange + '22',
+    borderWidth: 1,
+    borderColor: Colors.orange + '66',
   },
   contentTabText: {
     fontSize: 13,
     fontFamily: Fonts.bodySemiBold,
     fontWeight: '700',
-    color: Colors.dim,
+    color: Colors.text,
     letterSpacing: 0.2,
   },
   contentTabTextActive: { color: Colors.orange },
-  stories: { flexDirection: 'row', gap: 14, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.border, alignItems: 'center' },
+  stories: { flexDirection: 'row', gap: 14, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: GLASS.border, alignItems: 'center' },
   storyHint: { color: Colors.dim, fontSize: 12, flex: 1 },
-  reelsPromo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginHorizontal: 16,
-    marginTop: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 16,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border2,
+  sparksSection: {
+    marginTop: 12,
+    paddingBottom: 4,
   },
-  reelsPromoBadge: { color: Colors.orange, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  reelsPromoText: { color: Colors.text, fontSize: 13, fontWeight: '600', flex: 1 },
-  noticeBar: { marginHorizontal: 16, marginTop: 10, borderRadius: 12, backgroundColor: Colors.orange + '15', paddingHorizontal: 12, paddingVertical: 10 },
-  noticeText: { color: Colors.orange, fontWeight: '600', fontSize: 12 },
+  sparksSectionHeader: {
+    paddingHorizontal: 16,
+    marginBottom: 10,
+    gap: 2,
+  },
+  sparksSectionEyebrow: {
+    color: Colors.orange,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    fontFamily: Fonts.bodySemiBold,
+  },
+  sparksSectionTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: Fonts.bodySemiBold,
+  },
+  sparksCarousel: {
+    paddingHorizontal: 16,
+    gap: 12,
+    alignItems: 'center',
+  },
+  sparkThumbWrap: { width: 108 },
+  sparkGradientBorder: {
+    borderRadius: 20,
+    padding: 2,
+  },
+  sparkThumbInner: {
+    height: 152,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: Colors.surface,
+  },
+  sparkThumbImg: { width: '100%', height: '100%' },
+  sparkThumbFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.card,
+  },
+  sparkThumbEmoji: { fontSize: 28 },
+  sparkThumbScrim: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: '55%',
+  },
+  sparkThumbLabel: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
+    bottom: 8,
+    color: Colors.white,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  sparkSeeAll: {
+    height: 152,
+    minWidth: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  sparkSeeAllText: {
+    color: Colors.orange,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   emptyState: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 24 },
   emptyEmoji: { fontSize: 48, marginBottom: 8 },
   emptyText: { color: Colors.sub, textAlign: 'center', fontSize: 14, lineHeight: 20 },
-  modalBackdrop: { flex: 1, backgroundColor: '#000A', justifyContent: 'flex-end' },
-  modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%' },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border2, alignSelf: 'center', marginBottom: 16 },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.58)', justifyContent: 'flex-end' },
+  modalSheet: { padding: 20, maxHeight: '80%', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
+  storySheet: {
+    padding: 20,
+    paddingBottom: 28,
+    maxHeight: '80%',
+    backgroundColor: Colors.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+  },
+  mediaPickSolid: {
+    padding: 14,
+    marginBottom: 12,
+    borderRadius: GLASS.cardRadius,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+  },
+  storyCancel: {
+    marginTop: 12,
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  storyCancelText: {
+    color: Colors.sub,
+    fontSize: 14,
+    fontFamily: Fonts.bodySemiBold,
+    fontWeight: '700',
+  },
+  modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.22)', alignSelf: 'center', marginBottom: 16, opacity: 0.65 },
   modalHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   modalTitle: { fontSize: 18, fontWeight: '800', color: Colors.text, marginBottom: 12 },
   modalClear: { color: Colors.orange, fontWeight: '700' },
@@ -1131,18 +2164,18 @@ const ff = StyleSheet.create({
   createTitle: { color: Colors.text, fontSize: 14, fontWeight: '700' },
   createSub: { color: Colors.sub, fontSize: 12, marginTop: 2 },
   createRowHighlight: { backgroundColor: Colors.orange + '20', borderRadius: 12, paddingHorizontal: 4 },
-  modalInput: { backgroundColor: Colors.card, borderRadius: 12, padding: 12, color: Colors.text, minHeight: 80, marginBottom: 12, textAlignVertical: 'top' },
+  modalInput: { backgroundColor: GLASS.bg, borderRadius: GLASS.cardRadius, padding: 12, color: Colors.text, minHeight: 80, marginBottom: 12, textAlignVertical: 'top', borderWidth: 1, borderColor: GLASS.border },
   textStyleRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   textStyleChip: {
     flex: 1,
-    backgroundColor: Colors.card,
+    backgroundColor: GLASS.bg,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: Colors.border2,
+    borderColor: GLASS.border,
     paddingVertical: 8,
     alignItems: 'center',
   },
-  textStyleChipActive: { borderColor: Colors.orange, backgroundColor: Colors.orange + '22' },
+  textStyleChipActive: { borderColor: Colors.orange + 'AA', backgroundColor: Colors.orange + '22' },
   textStyleChipText: { color: Colors.sub, fontSize: 11, fontWeight: '700' },
   textCardPreview: {
     minHeight: 220,
@@ -1174,17 +2207,15 @@ const ff = StyleSheet.create({
   optionSelected: { borderColor: Colors.white, transform: [{ scale: 1.08 }] },
   swatchCheck: { color: Colors.white, fontSize: 17, fontWeight: '900' },
   fontSample: { color: Colors.text, fontSize: 18, lineHeight: 23 },
-  mediaPick: { backgroundColor: Colors.card, borderRadius: 12, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: Colors.border2 },
+  mediaPick: { padding: 14, marginBottom: 12 },
   mediaPickText: { color: Colors.sub, fontWeight: '600' },
-  primaryBtn: { backgroundColor: Colors.orange, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  primaryBtnWrap: { borderRadius: GLASS.cardRadius, overflow: 'hidden' },
+  primaryBtn: { backgroundColor: Colors.orange, borderRadius: GLASS.cardRadius, paddingVertical: 13, alignItems: 'center' },
+  primaryBtnDisabled: { opacity: 0.65 },
   primaryBtnText: { color: Colors.white, fontWeight: '700' },
-  storyViewer: { flex: 1, backgroundColor: '#000E', justifyContent: 'center' },
-  storyViewerInner: { flex: 1 },
-  storyFull: { flex: 1, width: '100%' },
-  storyCaption: { position: 'absolute', bottom: 48, left: 16, right: 16, color: Colors.white, fontSize: 15, fontWeight: '600' },
-});
+}));
 
-const sf = StyleSheet.create({
+const sf = createDynamicStyles((Colors) => ({
   story: { alignItems: 'center', width: 64, gap: 5 },
   storyRing: { width: 60, height: 60, borderRadius: 30, borderWidth: 2.5, borderColor: Colors.orange, padding: 2 },
   storyAvatar: { flex: 1, borderRadius: 28, backgroundColor: Colors.card, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
@@ -1192,4 +2223,4 @@ const sf = StyleSheet.create({
   storyEmoji: { fontSize: 26 },
   storyPlusIcon: { fontSize: 32, color: Colors.text, fontWeight: '300' },
   storyName: { fontSize: 10, color: Colors.sub, textAlign: 'center' },
-});
+}));

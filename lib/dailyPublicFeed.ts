@@ -4,12 +4,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import * as Location from 'expo-location';
 import { matchCity, POPULAR_CITIES } from '../constants/cities';
+import { withTimeout } from './withTimeout';
+import { softBoot } from './bootGuards';
 import type { CityNews, CityNewsCategory, CityNewsComment, DailyWidgetMeta, Profile, Reel } from '../types';
 
 const FETCH_MS = 8000;
 
+export type DailyRegion = 'local' | 'national' | 'international';
+
 export type DailyLocation = {
   city: string;
+  /** Finer GPS locality (e.g. neighbourhood / range) when reverse-geocoded. */
+  area?: string;
   state?: string;
   country?: string;
   lat: number;
@@ -210,51 +216,151 @@ const TOPIC_PHOTO_POOLS: Record<string, string[]> = {
     'https://images.unsplash.com/photo-1504608524841-42fe6f032b4b?auto=format&fit=crop&w=900&q=80',
     'https://images.unsplash.com/photo-1527482797697-01785c6c3e7b?auto=format&fit=crop&w=900&q=80',
   ],
+  traffic: [
+    'https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1502920917128-1aa500764cbd?auto=format&fit=crop&w=1200&q=85',
+  ],
+  wheat: [
+    'https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=1200&q=85',
+  ],
+  rice: [
+    'https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1536304997881-eca63e8e4b36?auto=format&fit=crop&w=1200&q=85',
+  ],
+  millets: [
+    'https://images.unsplash.com/photo-1596797038530-2c107229654b?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1505576399279-565b52d4ac71?auto=format&fit=crop&w=1200&q=85',
+  ],
+  accident: [
+    'https://images.unsplash.com/photo-1580674285054-bed31e145f59?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=1200&q=85',
+  ],
+  international: [
+    'https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1495020689067-958852a7765e?auto=format&fit=crop&w=1200&q=85',
+  ],
+  world: [
+    'https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=1200&q=85',
+  ],
   news: [
-    'https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=900&q=80',
-    'https://images.unsplash.com/photo-1495020689067-958852a7765e?auto=format&fit=crop&w=900&q=80',
-    'https://images.unsplash.com/photo-1523995462485-3d171b5c8fa9?auto=format&fit=crop&w=900&q=80',
+    'https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1495020689067-958852a7765e?auto=format&fit=crop&w=1200&q=85',
+    'https://images.unsplash.com/photo-1523995462485-3d171b5c8fa9?auto=format&fit=crop&w=1200&q=85',
   ],
 };
 
 function pickPoolPhoto(poolKey: string, seed: string, variant = 0) {
-  const pool = TOPIC_PHOTO_POOLS[poolKey] || TOPIC_PHOTO_POOLS.news;
+  const unsplash = TOPIC_PHOTO_POOLS[poolKey] || TOPIC_PHOTO_POOLS.news;
+  const pexels = PEXELS_PHOTO_POOLS[poolKey];
   const hash = (seed || poolKey).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-  return pool[Math.abs(hash + variant) % pool.length];
+  const idx = Math.abs(hash + variant);
+  if (pexels?.length && variant % 2 === 1) {
+    return pexels[idx % pexels.length];
+  }
+  return unsplash[idx % unsplash.length];
 }
 
-function detectTopicKey(category: string, title: string): string {
-  const t = `${category} ${title}`.toLowerCase();
-  if (/petrol|diesel|fuel|pump|nozzle|gas\s*station/.test(t)) return 'fuel';
-  if (/gold|sona|24k|22k|bullion|jewellery|jewelry/.test(t)) return 'gold';
-  if (/silver|chandi/.test(t)) return 'silver';
-  if (/thunder|storm|aandhi|lightning/.test(t)) return 'weather_storm';
-  if (/rain|baarish|shower|precipitation/.test(t)) return 'weather_rain';
-  if (/clear|sunny|blue\s*sky/.test(t)) return 'weather_clear';
-  if (/cloud|fog|kohra|overcast|weather|mausam|forecast/.test(t) || category === 'weather') {
-    return /clear|sunny/.test(t) ? 'weather_clear' : 'weather_cloud';
+/** Curated Pexels HD pools — alternated with Unsplash for variety */
+const PEXELS_PHOTO_POOLS: Record<string, string[]> = {
+  traffic: [
+    'https://images.pexels.com/photos/3861969/pexels-photo-3861969.jpeg?auto=compress&cs=tinysrgb&w=1200',
+    'https://images.pexels.com/photos/2081124/pexels-photo-2081124.jpeg?auto=compress&cs=tinysrgb&w=1200',
+  ],
+  gold: [
+    'https://images.pexels.com/photos/265906/pexels-photo-265906.jpeg?auto=compress&cs=tinysrgb&w=1200',
+  ],
+  wheat: [
+    'https://images.pexels.com/photos/265005/pexels-photo-265005.jpeg?auto=compress&cs=tinysrgb&w=1200',
+  ],
+  tech: [
+    'https://images.pexels.com/photos/3861969/pexels-photo-3861969.jpeg?auto=compress&cs=tinysrgb&w=1200',
+    'https://images.pexels.com/photos/1181675/pexels-photo-1181675.jpeg?auto=compress&cs=tinysrgb&w=1200',
+  ],
+  international: [
+    'https://images.pexels.com/photos/3769138/pexels-photo-3769138.jpeg?auto=compress&cs=tinysrgb&w=1200',
+  ],
+  sports: [
+    'https://images.pexels.com/photos/274422/pexels-photo-274422.jpeg?auto=compress&cs=tinysrgb&w=1200',
+  ],
+};
+
+/** Primary entity keys extracted from headline + body for context-aware thumbnails */
+export type TopicEntity =
+  | 'gold' | 'silver' | 'fuel' | 'wheat' | 'rice' | 'millets' | 'mandi'
+  | 'weather_storm' | 'weather_rain' | 'weather_clear' | 'weather_cloud'
+  | 'sports' | 'tech' | 'events' | 'finance' | 'alerts' | 'accident' | 'traffic'
+  | 'international' | 'news';
+
+const ENTITY_PATTERNS: Array<{ entity: TopicEntity; re: RegExp }> = [
+  { entity: 'gold', re: /\b(gold|sona|24k|22k|18k|bullion|jewellery|jewelry)\b/i },
+  { entity: 'silver', re: /\b(silver|chandi)\b/i },
+  { entity: 'fuel', re: /\b(petrol|diesel|fuel|pump|gas\s*station|crude)\b/i },
+  { entity: 'wheat', re: /\b(wheat|gehu|gehun)\b/i },
+  { entity: 'rice', re: /\b(rice|basmati|parmal|chawal)\b/i },
+  { entity: 'millets', re: /\b(millet|bajra|ragi|jowar|shree\s*anna|pearl\s*millet|finger\s*millet|sorghum)\b/i },
+  { entity: 'mandi', re: /\b(mandi|sabzi|vegetable|fruit|aloo|tamatar|pyaz|produce)\b/i },
+  { entity: 'accident', re: /\b(accident|crash|collision|pile-?up|road\s*mishap)\b/i },
+  { entity: 'traffic', re: /\b(traffic|jam|congestion|gridlock|road\s*block|blockade)\b/i },
+  { entity: 'weather_storm', re: /\b(thunder|storm|aandhi|lightning|cyclone)\b/i },
+  { entity: 'weather_rain', re: /\b(rain|baarish|shower|precipitation|flood)\b/i },
+  { entity: 'weather_clear', re: /\b(clear|sunny|blue\s*sky)\b/i },
+  { entity: 'sports', re: /\b(sport|cricket|football|hockey|match|ipl|world\s*cup|tennis)\b/i },
+  { entity: 'tech', re: /\b(tech|ai\b|startup|software|cyber|gadget|smartphone|silicon)\b/i },
+  { entity: 'events', re: /\b(event|festival|mela|concert|exhibition|celebration)\b/i },
+  { entity: 'finance', re: /\b(usd|dollar|nifty|sensex|rupee|stock|finance|currency|market\s*index)\b/i },
+  { entity: 'alerts', re: /\b(alert|emergency|warning|strike|evacuation)\b/i },
+  { entity: 'international', re: /\b(global|world|international|foreign|overseas|europe|america|china|middle\s*east)\b/i },
+];
+
+export function extractTopicEntities(title: string, body = ''): TopicEntity[] {
+  const text = `${title} ${body}`.toLowerCase();
+  const hits: TopicEntity[] = [];
+  for (const { entity, re } of ENTITY_PATTERNS) {
+    if (re.test(text)) hits.push(entity);
   }
-  if (/sport|cricket|football|hockey|match|ipl|world\s*cup/.test(t)) return 'sports';
-  if (/tech|ai\b|startup|app\b|phone|gadget|software|cyber/.test(t)) return 'tech';
-  if (/event|festival|mela|concert|exhibition|celebration/.test(t) || category === 'event') return 'events';
-  if (/mandi|sabzi|vegetable|fruit|aloo|tamatar|pyaz/.test(t)) return 'mandi';
-  if (/usd|dollar|nifty|sensex|rupee|stock|finance|currency/.test(t)) return 'finance';
-  if (/alert|emergency|warning|flood|strike/.test(t) || category === 'alerts') return 'alerts';
+  if (/cloud|fog|kohra|overcast|weather|mausam|forecast/.test(text) && !hits.some(h => h.startsWith('weather_'))) {
+    hits.push(/clear|sunny/.test(text) ? 'weather_clear' : 'weather_cloud');
+  }
+  return hits.length ? hits : ['news'];
+}
+
+export function isRateWidgetVisual(item: Pick<CityNews, 'widget' | 'category'>) {
+  const kind = item.widget?.kind;
+  return item.category === 'rates' && !!kind && ['gold', 'silver', 'fuel', 'mandi', 'fx', 'index'].includes(kind);
+}
+
+function detectTopicKey(category: string, title: string, body = ''): string {
+  const entities = extractTopicEntities(title, body);
+  if (entities[0] !== 'news') return entities[0];
+  const t = `${category} ${title} ${body}`.toLowerCase();
+  if (category === 'weather') return /clear|sunny/.test(t) ? 'weather_clear' : 'weather_cloud';
+  if (category === 'alerts') return 'alerts';
+  if (category === 'event') return 'events';
   if (category === 'rates') return /silver|chandi/.test(t) ? 'silver' : 'gold';
   return 'news';
 }
 
 /**
- * Strict topic-matched high-res image.
- * Always returns images.unsplash.com photo URLs from curated pools — never dark placeholders.
+ * Context-aware HD thumbnail — entity extraction from title + optional body.
+ * Third argument may be body text or variant index for backward compatibility.
  */
 export function getTopicImageUrl(
   category: string,
   title: string,
+  bodyOrVariant?: string | number,
   variant = 0,
 ): string {
-  const key = detectTopicKey(category, title);
-  return pickPoolPhoto(key, `${category}:${title}`, variant);
+  let body = '';
+  let v = variant;
+  if (typeof bodyOrVariant === 'number') {
+    v = bodyOrVariant;
+  } else if (typeof bodyOrVariant === 'string') {
+    body = bodyOrVariant;
+  }
+  const key = detectTopicKey(category, title, body);
+  return pickPoolPhoto(key, `${category}:${title}:${body}`, v);
 }
 
 /** @deprecated Prefer getTopicImageUrl — kept for keyword diagnostics */
@@ -272,9 +378,17 @@ export function buildUnsplashFeatureUrl(keywords: string, variant = 0) {
   return getTopicImageUrl(keywords, keywords, variant);
 }
 
+function isLowResolutionImage(url: string) {
+  if (/thumb|thumbnail|small|icon|avatar|w=\d{1,2}\b|h=\d{1,2}\b|width=\d{1,2}\b|height=\d{1,2}\b/i.test(url)) return true;
+  const dim = url.match(/[?&](?:w|width)=(\d+)/i);
+  if (dim && Number(dim[1]) < 400) return true;
+  return false;
+}
+
 function isUsableFeatureImage(url?: string | null) {
   if (!url || !/^https?:\/\//i.test(url)) return false;
   if (/placehold|picsum\.photos|source\.unsplash|via\.placeholder|dummyimage/i.test(url)) return false;
+  if (isLowResolutionImage(url)) return false;
   return true;
 }
 
@@ -283,19 +397,31 @@ export function resolveFeatureImage(
   seed: string,
   fallback?: string | null,
   title?: string,
-  _city?: string,
+  body?: string,
 ) {
   if (isUsableFeatureImage(fallback)) return fallback as string;
-  return getTopicImageUrl(category, title || seed, 0);
+  return getTopicImageUrl(category, title || seed, body || seed, 0);
 }
 
 export function nextFeatureImage(
   category: CityNewsCategory,
   title: string,
   attempt: number,
-  _city?: string,
+  body?: string,
 ) {
-  return getTopicImageUrl(category, title, attempt);
+  return getTopicImageUrl(category, title, body, attempt);
+}
+
+/** Resolve hero/thumbnail for a news card — HD entity match with fallback chain */
+export function heroImageFor(item: Pick<CityNews, 'category' | 'title' | 'body' | 'image_url'>, attempt = 0) {
+  if (attempt === 0 && isUsableFeatureImage(item.image_url)) {
+    return item.image_url as string;
+  }
+  return getTopicImageUrl(item.category, item.title, item.body, attempt);
+}
+
+export function isHeroImageUsable(url?: string | null) {
+  return isUsableFeatureImage(url);
 }
 
 function newsImage(
@@ -303,15 +429,15 @@ function newsImage(
   fallback?: string | null,
   category: CityNewsCategory = 'general',
   title?: string,
-  _city?: string,
+  body?: string,
 ) {
-  return resolveFeatureImage(category, seed, fallback, title || seed);
+  return resolveFeatureImage(category, seed, fallback, title || seed, body);
 }
 
 /** Clean English headline for InShorts */
 export function englishHeadline(title: string) {
   return title
-    .replace(/^(National Update|.*? News|.*? Alert|.*? Events|.*? Weather|Gold Rates Today|Silver Rates Today|Dollar vs Rupee|Top 10 Vegetables|Top 10 Fruits|Spark)\s*:\s*/i, '')
+    .replace(/^(National Update|.*? News|.*? Alert|.*? Events|.*? Weather|Gold Rates Today|Silver Rates Today|Dollar vs Rupee|Top 10 Vegetables|Top 10 Fruits|Spark|Moment)\s*:\s*/i, '')
     .replace(/\s*[·•].*$/, '')
     .trim() || title;
 }
@@ -377,6 +503,105 @@ function weatherLabel(code: number) {
   return 'Thunderstorms';
 }
 
+/** Compact emoji for Discover-style weather pulse cards. */
+export function weatherEmoji(code?: number | null) {
+  const c = code ?? 0;
+  if (c === 0) return '☀️';
+  if (c <= 3) return '⛅';
+  if (c <= 48) return '🌫️';
+  if (c <= 67) return '🌧️';
+  if (c <= 77) return '❄️';
+  if (c <= 82) return '🌦️';
+  return '⛈️';
+}
+
+export type WeatherPulse = {
+  temp: number;
+  rainPct: number | null;
+  aqi: number | null;
+  weatherCode: number;
+  areaName: string;
+  condition: string;
+  /** Tomorrow's sunrise local time, e.g. "6:04 AM" */
+  sunriseTomorrow?: string | null;
+};
+
+function formatSunriseLocal(isoLocal: string | undefined | null): string | null {
+  if (!isoLocal) return null;
+  // open-meteo: "2026-09-12T06:04"
+  const m = isoLocal.match(/T(\d{2}):(\d{2})/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${min} ${ampm}`;
+}
+
+/** Lightweight weather snapshot for the Daily header slider (independent of the full feed). */
+export async function fetchWeatherPulse(location: DailyLocation): Promise<WeatherPulse | null> {
+  const lat = Number(location.lat);
+  const lng = Number(location.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const areaName = (location.area || location.city || 'Your area').trim();
+  const [data, air] = await Promise.all([
+    fetchJson<{
+      current?: { temperature_2m?: number; weather_code?: number };
+      daily?: {
+        precipitation_probability_max?: number[];
+        sunrise?: string[];
+      };
+    }>(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}`
+      + '&current=temperature_2m,weather_code'
+      + '&daily=precipitation_probability_max,sunrise&timezone=auto&forecast_days=2',
+      7000,
+    ),
+    fetchJson<{
+      current?: { european_aqi?: number; us_aqi?: number };
+    }>(
+      `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lng}&current=european_aqi,us_aqi`,
+      7000,
+    ),
+  ]);
+
+  if (data?.current?.temperature_2m == null && data?.current?.weather_code == null) {
+    return null;
+  }
+
+  const weatherCode = data?.current?.weather_code ?? 2;
+  const temp = Math.round(data?.current?.temperature_2m ?? 28);
+  const rainRaw = data?.daily?.precipitation_probability_max?.[0];
+  const rainPct = typeof rainRaw === 'number' && Number.isFinite(rainRaw) ? Math.round(rainRaw) : null;
+  const aqiRaw = air?.current?.us_aqi ?? air?.current?.european_aqi;
+  const aqi = typeof aqiRaw === 'number' && Number.isFinite(aqiRaw) ? Math.round(aqiRaw) : null;
+  const sunriseTomorrow = formatSunriseLocal(data?.daily?.sunrise?.[1] ?? data?.daily?.sunrise?.[0]);
+
+  return {
+    temp,
+    rainPct,
+    aqi,
+    weatherCode,
+    areaName,
+    condition: weatherLabel(weatherCode),
+    sunriseTomorrow,
+  };
+}
+
+export function fallbackWeatherPulse(location: DailyLocation): WeatherPulse {
+  return {
+    temp: 28,
+    rainPct: null,
+    aqi: null,
+    weatherCode: 2,
+    areaName: (location.area || location.city || 'Your area').trim(),
+    condition: 'Partly cloudy',
+    sunriseTomorrow: null,
+  };
+}
+
 function weatherSummary(code: number, rainChance?: number) {
   if (code >= 95) return 'Severe thunderstorms possible — limit outdoor travel if you can.';
   if (code >= 80 || (rainChance ?? 0) >= 60) return 'Heavy rain likely later — carry an umbrella.';
@@ -405,22 +630,24 @@ function marketSlug(city: string) {
   return map[city.trim().toLowerCase()] || 'delhi';
 }
 
-function englishNewsTitle(title: string, city: string, national: boolean, category: CityNewsCategory) {
+function englishNewsTitle(title: string, city: string, scope: DailyRegion, category: CityNewsCategory) {
   const clean = title.replace(/ - .+$/, '').trim();
   if (category === 'alerts') return `${city} Alert: ${clean}`;
   if (category === 'event') return `${city} Events: ${clean}`;
-  if (national) return `National Update: ${clean}`;
+  if (scope === 'international') return `World Update: ${clean}`;
+  if (scope === 'national') return `National Update: ${clean}`;
   return `${city} News: ${clean}`;
 }
 
-function englishNewsBody(description: string, city: string, national: boolean) {
+function englishNewsBody(description: string, city: string, scope: DailyRegion) {
   const base = summarize(description || '');
   if (!base) {
-    return national
-      ? 'Latest national headlines — open the full story for details.'
-      : `Local update from ${city} — open the full story for details.`;
+    if (scope === 'international') return 'Latest global headlines — open the full story for details.';
+    if (scope === 'national') return 'Latest national headlines — open the full story for details.';
+    return `Local update from ${city} — open the full story for details.`;
   }
-  if (national) return `${base} · National desk.`;
+  if (scope === 'international') return `${base} · International desk.`;
+  if (scope === 'national') return `${base} · National desk.`;
   return `${base} · ${city} local desk.`;
 }
 
@@ -489,6 +716,67 @@ export function sortDailyByNewest(list: CityNews[]): CityNews[] {
   return [...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
+const TITLE_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'being', 'but', 'by', 'for', 'from',
+  'had', 'has', 'have', 'he', 'her', 'his', 'in', 'into', 'is', 'it', 'its', 'of', 'on',
+  'or', 'that', 'the', 'their', 'there', 'they', 'this', 'to', 'was', 'were', 'will', 'with',
+  'news', 'update', 'updates', 'says', 'said', 'new', 'latest', 'report', 'reports',
+]);
+
+function normalizeTitleTokens(title: string): Set<string> {
+  const clean = englishHeadline(title)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(word => word.length > 1 && !TITLE_STOPWORDS.has(word));
+  return new Set(clean);
+}
+
+function tokenJaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection += 1;
+  }
+  const union = a.size + b.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+/** Fuzzy headline dedupe — drops items with >75% token-set similarity. */
+export function dedupeDailyItems(items: CityNews[]): CityNews[] {
+  const kept: CityNews[] = [];
+  const tokenSets: Set<string>[] = [];
+  const seenIds = new Set<string>();
+
+  for (const item of items) {
+    if (seenIds.has(item.id)) continue;
+    const tokens = normalizeTitleTokens(item.title);
+    const duplicate = tokenSets.some(existing => tokenJaccardSimilarity(tokens, existing) > 0.75);
+    if (duplicate) continue;
+    kept.push(item);
+    tokenSets.push(tokens);
+    seenIds.add(item.id);
+  }
+  return kept;
+}
+
+function formatUpdatedBadge(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Updated just now';
+  return `Updated ${d.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`;
+}
+
+function movementTag(changePct: number) {
+  const sign = changePct >= 0 ? '+' : '';
+  const emoji = changePct >= 0 ? '🟢' : '🔴';
+  return `${emoji} ${sign}${changePct.toFixed(1)}%`;
+}
+
 /** @deprecated Prefer sortDailyByNewest for newspaper chronology */
 export function shuffleDailyItems<T>(list: T[]): T[] {
   const arr = [...list];
@@ -503,13 +791,25 @@ async function detectByGps(): Promise<DailyLocation | null> {
   try {
     if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.geolocation) {
       const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 7000, maximumAge: 300000 });
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          timeout: 2500,
+          maximumAge: 300000,
+          enableHighAccuracy: false,
+        });
       });
       return reverseGeocode(pos.coords.latitude, pos.coords.longitude, 'gps');
     }
-    const { status } = await Location.requestForegroundPermissionsAsync();
+    const { status } = await withTimeout(
+      Location.requestForegroundPermissionsAsync(),
+      2500,
+      'location.permission',
+    );
     if (status !== 'granted') return null;
-    const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    const loc = await withTimeout(
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      2500,
+      'location.gps',
+    );
     return reverseGeocode(loc.coords.latitude, loc.coords.longitude, 'gps');
   } catch {
     return null;
@@ -521,10 +821,18 @@ async function reverseGeocode(lat: number, lng: number, source: DailyLocation['s
     `https://geocoding-api.open-meteo.com/v1/reverse?latitude=${lat}&longitude=${lng}&language=en&format=json`,
   );
   const hit = geo?.results?.[0];
-  const rawName = hit?.city || hit?.name || '';
+  const locality = (hit?.name || '').trim();
+  const cityName = (hit?.city || '').trim();
+  const rawName = cityName || locality;
   const matched = matchCity(rawName, lat, lng);
+  const city = cityName || matched?.name || locality || 'Your city';
+  // Prefer the precise place name from GPS reverse-geocode for weather cards.
+  const area = locality && locality.toLowerCase() !== city.toLowerCase()
+    ? locality
+    : (locality || city);
   return {
-    city: matched?.name || rawName || 'Your city',
+    city,
+    area,
     state: hit?.admin1,
     country: hit?.country,
     lat: matched?.lat ?? lat,
@@ -541,6 +849,7 @@ async function detectByIp(): Promise<DailyLocation | null> {
   const matched = matchCity(data.city, data.latitude, data.longitude);
   return {
     city: matched?.name || data.city,
+    area: data.city,
     state: data.region,
     country: data.country,
     lat: matched?.lat ?? data.latitude,
@@ -550,32 +859,39 @@ async function detectByIp(): Promise<DailyLocation | null> {
 }
 
 export async function detectDailyLocation(profile?: Profile | null): Promise<DailyLocation> {
-  const gps = await detectByGps();
-  if (gps) return gps;
-
-  const ip = await detectByIp();
-  if (ip) return ip;
-
-  const fallback = matchCity(profile?.city || '', profile?.lat, profile?.lng)
+  const fallbackCity = matchCity(profile?.city || '', profile?.lat, profile?.lng)
     || POPULAR_CITIES.find(city => city.name.toLowerCase() === (profile?.city || '').toLowerCase())
     || POPULAR_CITIES[1];
-  return {
-    city: profile?.city || fallback.name,
-    lat: profile?.lat ?? fallback.lat,
-    lng: profile?.lng ?? fallback.lng,
+  const profileFallback: DailyLocation = {
+    city: profile?.city || fallbackCity.name,
+    lat: profile?.lat ?? fallbackCity.lat,
+    lng: profile?.lng ?? fallbackCity.lng,
     source: 'profile',
   };
+
+  try {
+    const gps = await softBoot(detectByGps(), null, 'daily.gps');
+    if (gps) return gps;
+
+    const ip = await softBoot(detectByIp(), null, 'daily.ip');
+    if (ip) return ip;
+  } catch (error) {
+    console.warn('[daily] Location detection failed — using profile / default city.', error);
+  }
+
+  return profileFallback;
 }
 
 async function fetchNewsCategory(
   location: DailyLocation,
   category: CityNewsCategory,
   query: string,
-  national = false,
+  scope: DailyRegion = 'local',
 ): Promise<CityNews[]> {
   const gnewsKey = (process.env.EXPO_PUBLIC_GNEWS_KEY || '').trim();
   const newsApiKey = (process.env.EXPO_PUBLIC_NEWSAPI_KEY || '').trim();
   const cards: CityNews[] = [];
+  const desk = scope === 'national' ? 'National' : scope === 'international' ? 'International' : location.city;
 
   if (gnewsKey) {
     const gnews = await fetchJson<{ articles?: Array<{ title?: string; description?: string; url?: string; image?: string; publishedAt?: string }> }>(
@@ -583,13 +899,14 @@ async function fetchNewsCategory(
     );
     for (const article of gnews?.articles ?? []) {
       if (!article.title) continue;
+      const body = article.description || article.title;
       cards.push(makeCard({
         id: liveId(category, article.url || article.title),
-        city: national ? 'National' : location.city,
+        city: desk,
         category,
-        title: englishNewsTitle(article.title, location.city, national, category),
-        body: englishNewsBody(article.description || article.title, location.city, national),
-        image_url: newsImage(article.title, article.image, category, article.title, location.city),
+        title: englishNewsTitle(article.title, location.city, scope, category),
+        body: englishNewsBody(body, location.city, scope),
+        image_url: newsImage(article.title, article.image, category, article.title, body),
         source_url: article.url || null,
         created_at: article.publishedAt,
         featured: category === 'alerts',
@@ -601,13 +918,14 @@ async function fetchNewsCategory(
     );
     for (const article of newsapi?.articles ?? []) {
       if (!article.title || article.title === '[Removed]') continue;
+      const body = article.description || article.title;
       cards.push(makeCard({
         id: liveId(category, article.url || article.title),
-        city: national ? 'National' : location.city,
+        city: desk,
         category,
-        title: englishNewsTitle(article.title, location.city, national, category),
-        body: englishNewsBody(article.description || article.title, location.city, national),
-        image_url: newsImage(article.title, article.urlToImage, category, article.title, location.city),
+        title: englishNewsTitle(article.title, location.city, scope, category),
+        body: englishNewsBody(body, location.city, scope),
+        image_url: newsImage(article.title, article.urlToImage, category, article.title, body),
         source_url: article.url || null,
         created_at: article.publishedAt,
         featured: category === 'alerts',
@@ -617,28 +935,38 @@ async function fetchNewsCategory(
 
   if (cards.length) return cards;
 
-  const rssQuery = national
-    ? `https://news.google.com/rss/headlines/section/geo/India?hl=en-IN&gl=IN&ceid=IN:en`
-    : `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-IN&gl=IN&ceid=IN:en`;
+  const rssQuery = scope === 'international'
+    ? 'https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en'
+    : scope === 'national'
+      ? 'https://news.google.com/rss/headlines/section/geo/India?hl=en-IN&gl=IN&ceid=IN:en'
+      : `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-IN&gl=IN&ceid=IN:en`;
   const items = await loadRss(rssQuery);
-  return items.slice(0, 8).map((item, index) => makeCard({
-    id: liveId(category, item.link || item.title),
-    city: national ? 'National' : location.city,
-    category,
-    title: englishNewsTitle(item.title, location.city, national, category),
-    body: englishNewsBody(item.description || item.title, location.city, national),
-    image_url: newsImage(item.title, item.image, category, item.title, location.city),
-    source_url: item.link || null,
-    created_at: item.pubDate ? new Date(item.pubDate).toISOString() : undefined,
-    featured: category === 'alerts' || (category === 'event' && index === 0),
-  }));
+  return items.slice(0, 8).map((item, index) => {
+    const body = item.description || item.title;
+    return makeCard({
+      id: liveId(category, item.link || item.title),
+      city: desk,
+      category,
+      title: englishNewsTitle(item.title, location.city, scope, category),
+      body: englishNewsBody(body, location.city, scope),
+      image_url: newsImage(item.title, item.image, category, item.title, body),
+      source_url: item.link || null,
+      created_at: item.pubDate ? new Date(item.pubDate).toISOString() : undefined,
+      featured: category === 'alerts' || (category === 'event' && index === 0),
+    });
+  });
 }
 
 async function fetchWeatherCards(location: DailyLocation): Promise<CityNews[]> {
-  const data = await fetchJson<{
-    current?: { temperature_2m?: number; relative_humidity_2m?: number; weather_code?: number; wind_speed_10m?: number; time?: string };
-    daily?: { time?: string[]; weather_code?: number[]; temperature_2m_max?: number[]; temperature_2m_min?: number[]; precipitation_probability_max?: number[] };
-  }>(`https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lng}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto`);
+  const [data, air] = await Promise.all([
+    fetchJson<{
+      current?: { temperature_2m?: number; relative_humidity_2m?: number; weather_code?: number; wind_speed_10m?: number; time?: string };
+      daily?: { time?: string[]; weather_code?: number[]; temperature_2m_max?: number[]; temperature_2m_min?: number[]; precipitation_probability_max?: number[] };
+    }>(`https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lng}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto`),
+    fetchJson<{
+      current?: { european_aqi?: number; us_aqi?: number };
+    }>(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${location.lat}&longitude=${location.lng}&current=european_aqi,us_aqi`),
+  ]);
 
   if (!data?.current) return [];
 
@@ -647,16 +975,19 @@ async function fetchWeatherCards(location: DailyLocation): Promise<CityNews[]> {
   const humidity = Math.round(data.current.relative_humidity_2m ?? 0);
   const wind = Math.round(data.current.wind_speed_10m ?? 0);
   const rainTonight = data.daily?.precipitation_probability_max?.[0] ?? 0;
+  const aqiRaw = air?.current?.us_aqi ?? air?.current?.european_aqi;
+  const aqi = typeof aqiRaw === 'number' && Number.isFinite(aqiRaw) ? Math.round(aqiRaw) : undefined;
   const condition = weatherLabel(currentCode);
   const outlook = weatherSummary(currentCode, rainTonight);
+  const areaLabel = location.area || location.city;
 
   const cards: CityNews[] = [
     makeCard({
       id: liveId('weather', `now-${location.city}`),
       city: location.city,
       category: 'weather',
-      title: `${location.city} Weather: ${condition}`,
-      body: `Now ${temp}°C · ${condition}. Humidity ${humidity}%, wind ${wind} km/h. Rain chance today ~${rainTonight}%. ${outlook}`,
+      title: `${areaLabel} Weather: ${condition}`,
+      body: `Now ${temp}°C · ${condition}. Humidity ${humidity}%, wind ${wind} km/h. Rain chance today ~${rainTonight}%.${aqi != null ? ` AQI ${aqi}.` : ''} ${outlook}`,
       image_url: weatherImage(currentCode),
       source_url: 'https://open-meteo.com/en/docs',
       created_at: new Date().toISOString(),
@@ -667,8 +998,12 @@ async function fetchWeatherCards(location: DailyLocation): Promise<CityNews[]> {
         condition,
         humidity,
         wind,
+        rainChance: rainTonight,
+        aqi,
+        weatherCode: currentCode,
         live: true,
-        label: location.city,
+        label: areaLabel,
+        updatedAt: new Date().toISOString(),
       },
     }),
   ];
@@ -693,6 +1028,8 @@ async function fetchWeatherCards(location: DailyLocation): Promise<CityNews[]> {
         kind: 'weather',
         temp: high,
         condition: weatherLabel(code),
+        weatherCode: code,
+        rainChance: rain,
         label,
         live: false,
       },
@@ -702,7 +1039,12 @@ async function fetchWeatherCards(location: DailyLocation): Promise<CityNews[]> {
   return cards;
 }
 
-async function fetchYahooQuote(symbol: string): Promise<{ price: number; prev: number; changePct: number } | null> {
+async function fetchYahooQuote(symbol: string): Promise<{
+  price: number;
+  prev: number;
+  changePct: number;
+  trend7d: number | null;
+} | null> {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
   const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
   const data = await fetchJson<any>(proxied, 10000);
@@ -711,24 +1053,29 @@ async function fetchYahooQuote(symbol: string): Promise<{ price: number; prev: n
   if (typeof price !== 'number') return null;
   const prev = meta?.chartPreviousClose ?? meta?.previousClose ?? price;
   const changePct = prev ? ((price - prev) / prev) * 100 : 0;
-  return { price, prev: Number(prev), changePct };
+  const closes = (data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close as Array<number | null> | undefined)
+    ?.filter((c): c is number => typeof c === 'number') ?? [];
+  const trend7d = closes.length >= 2
+    ? ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100
+    : null;
+  return { price, prev: Number(prev), changePct, trend7d };
 }
 
 async function fetchIndexQuote(symbol: string, label: string): Promise<CityNews | null> {
   const quote = await fetchYahooQuote(symbol);
   if (!quote) return null;
   const sign = quote.changePct >= 0 ? '+' : '';
-  const trend = quote.changePct >= 0 ? 'tezii' : 'giraawat';
+  const now = new Date().toISOString();
   return makeCard({
     id: liveId('rates', symbol),
     city: 'National',
     category: 'rates',
-    title: `${label} Live: ${quote.price.toLocaleString('en-IN', { maximumFractionDigits: 2 })} (${sign}${quote.changePct.toFixed(2)}%) — aaj ${trend}`,
-    body: `Bazaar desk · pehle band ${quote.prev.toLocaleString('en-IN', { maximumFractionDigits: 2 })}. Auto-refresh har 60s.`,
-    image_url: resolveFeatureImage('rates', label, 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=800&q=60'),
+    title: `${label} Live: ${quote.price.toLocaleString('en-IN', { maximumFractionDigits: 2 })} (${sign}${quote.changePct.toFixed(2)}%)`,
+    body: `Market desk · previous close ${quote.prev.toLocaleString('en-IN', { maximumFractionDigits: 2 })}. Refreshes every 60 seconds.`,
+    image_url: null,
     source_url: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
     featured: Math.abs(quote.changePct) >= 0.6,
-    created_at: new Date().toISOString(),
+    created_at: now,
     widget: {
       kind: 'index',
       label,
@@ -736,309 +1083,389 @@ async function fetchIndexQuote(symbol: string, label: string): Promise<CityNews 
       changePct: quote.changePct,
       live: true,
       cadence: 'daily',
+      updatedAt: now,
+      items: [
+        {
+          name: label,
+          price: quote.price.toLocaleString('en-IN', { maximumFractionDigits: 2 }),
+          changePct: quote.changePct,
+          baseline: quote.prev.toLocaleString('en-IN', { maximumFractionDigits: 2 }),
+          trend7d: quote.trend7d,
+        },
+      ],
     },
   });
 }
 
-async function fetchMetalCards(inrPerUsd: number | null): Promise<CityNews[]> {
-  const [gold, silver] = await Promise.all([
-    fetchYahooQuote('GC=F'),
-    fetchYahooQuote('SI=F'),
-  ]);
+async function fetchMetalCards(
+  inrPerUsd: number | null,
+  cityLabel = 'National',
+  idSuffix = 'national',
+): Promise<CityNews[]> {
+  const { getNationalBullionDesk } = await import('./nationalMarketRates');
+  const desk = await getNationalBullionDesk();
   const cards: CityNews[] = [];
-  const fx = inrPerUsd && inrPerUsd > 0 ? inrPerUsd : 83;
-  const now = new Date().toISOString();
+  if (!desk) return cards;
+
+  const fx = desk.usdInr || (inrPerUsd && inrPerUsd > 0 ? inrPerUsd : null);
+  if (!fx && !desk.gold10g24k) return cards;
+
+  const now = desk.updatedAt || new Date().toISOString();
+  const goldChange = desk.goldChangePct ?? 0;
+  const silverChange = desk.silverChangePct ?? 0;
+  const gold24k10g = desk.gold10g24k;
+  const gold22k10g = desk.gold10g22k ?? gold24k10g * (22 / 24);
+  const gold18k10g = desk.gold10g18k ?? gold24k10g * (18 / 24);
+  const gold24k1g = gold24k10g / 10;
+  const gold22k1g = gold22k10g / 10;
+  const gold18k1g = gold18k10g / 10;
+  const prevFactor = goldChange ? 1 / (1 + goldChange / 100) : 1;
+  const prev24k10g = gold24k10g * prevFactor;
+  const perKg = desk.silverKg;
+  const per100g = perKg / 10;
+  const per10g = perKg / 100;
+  const prevKg = perKg * (silverChange ? 1 / (1 + silverChange / 100) : 1);
+
   const fmt = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+  const fmtBaseline = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
   const amt = (price: number, pct: number) => {
     const delta = (price * pct) / 100;
     const sign = delta >= 0 ? '+' : '';
     return `${sign}₹${Math.abs(Math.round(delta)).toLocaleString('en-IN')}`;
   };
 
-  if (gold) {
-    const gold24k10g = (gold.price / 31.1035) * 10 * fx;
-    const gold22k10g = gold24k10g * (22 / 24);
-    const gold24k1g = gold24k10g / 10;
-    const gold22k1g = gold22k10g / 10;
-    const sign = gold.changePct >= 0 ? '+' : '';
-    cards.push(makeCard({
-      id: liveId('rates', 'gold-inr'),
-      city: 'National',
-      category: 'rates',
-      title: `Gold Rates Today: 24K ${fmt(gold24k10g)}/10g · 22K ${fmt(gold22k10g)}/10g (${sign}${gold.changePct.toFixed(2)}%)`,
-      body: `Daily metal desk — indicative Indian rates from international spot. 24K & 22K shown per 10g and per gram. Confirm with your jeweller for making charges.`,
-      image_url: getTopicImageUrl('rates', 'Gold 24K bullion jewelry rates today'),
-      featured: true,
-      created_at: now,
-      widget: {
-        kind: 'gold',
-        label: 'Gold · Daily',
-        value: fmt(gold24k10g),
-        changePct: gold.changePct,
-        unit: '/10g 24K',
-        live: true,
-        cadence: 'daily',
-        items: [
-          { name: '24K / 10g', price: fmt(gold24k10g), changePct: gold.changePct },
-          { name: '24K / 1g', price: fmt(gold24k1g), changePct: gold.changePct },
-          { name: '22K / 10g', price: fmt(gold22k10g), changePct: gold.changePct },
-          { name: '22K / 1g', price: fmt(gold22k1g), changePct: gold.changePct },
-          { name: 'Day change', price: `${sign}${gold.changePct.toFixed(2)}% · ${amt(gold24k10g, gold.changePct)}`, changePct: gold.changePct },
-        ],
-      },
-    }));
-  }
+  const goldTag = movementTag(goldChange);
+  cards.push(makeCard({
+    id: liveId('rates', `gold-inr-${idSuffix}`),
+    city: cityLabel,
+    category: 'rates',
+    title: `Gold Rates Today: 24K ${fmt(gold24k10g)}/10g · 22K ${fmt(gold22k10g)}/10g · 18K ${fmt(gold18k10g)}/10g (${goldTag})`,
+    body: `India retail bullion desk (${desk.source}) — updated daily. ${formatUpdatedBadge(now)}. Confirm with your local jeweller for making charges.`,
+    image_url: null,
+    featured: true,
+    created_at: now,
+    widget: {
+      kind: 'gold',
+      label: 'Gold · India Retail',
+      value: fmt(gold24k10g),
+      changePct: goldChange,
+      unit: '/10g 24K',
+      live: true,
+      cadence: 'daily',
+      updatedAt: now,
+      items: [
+        { name: '24K / 10g', price: fmt(gold24k10g), changePct: goldChange, baseline: fmtBaseline(prev24k10g) },
+        { name: '24K / 1g', price: fmt(gold24k1g), changePct: goldChange, baseline: fmtBaseline(prev24k10g / 10) },
+        { name: '22K / 10g', price: fmt(gold22k10g), changePct: goldChange, baseline: fmtBaseline(prev24k10g * (22 / 24)) },
+        { name: '22K / 1g', price: fmt(gold22k1g), changePct: goldChange, baseline: fmtBaseline((prev24k10g / 10) * (22 / 24)) },
+        { name: '18K / 10g', price: fmt(gold18k10g), changePct: goldChange, baseline: fmtBaseline(prev24k10g * (18 / 24)) },
+        { name: '18K / 1g', price: fmt(gold18k1g), changePct: goldChange, baseline: fmtBaseline((prev24k10g / 10) * (18 / 24)) },
+        { name: 'Day change', price: `${goldTag} · ${amt(gold24k10g, goldChange)}`, changePct: goldChange },
+      ],
+    },
+  }));
 
-  if (silver) {
-    const perKg = (silver.price / 31.1035) * 1000 * fx;
-    const per10g = perKg / 100;
-    const sign = silver.changePct >= 0 ? '+' : '';
-    cards.push(makeCard({
-      id: liveId('rates', 'silver-inr'),
-      city: 'National',
-      category: 'rates',
-      title: `Silver Rates Today: ${fmt(perKg)}/kg · ${fmt(per10g)}/10g (${sign}${silver.changePct.toFixed(2)}%)`,
-      body: `Daily silver desk — indicative rates per kilogram and per 10 grams from international spot.`,
-      image_url: getTopicImageUrl('rates', 'Silver bullion metal rates today'),
-      created_at: now,
-      featured: true,
-      widget: {
-        kind: 'silver',
-        label: 'Silver · Daily',
-        value: fmt(perKg),
-        changePct: silver.changePct,
-        unit: '/kg',
-        live: true,
-        cadence: 'daily',
-        items: [
-          { name: 'Silver / 1kg', price: fmt(perKg), changePct: silver.changePct },
-          { name: 'Silver / 10g', price: fmt(per10g), changePct: silver.changePct },
-          { name: 'Day change', price: `${sign}${silver.changePct.toFixed(2)}% · ${amt(perKg, silver.changePct)}`, changePct: silver.changePct },
-        ],
-      },
-    }));
-  }
+  const silverTag = movementTag(silverChange);
+  cards.push(makeCard({
+    id: liveId('rates', `silver-inr-${idSuffix}`),
+    city: cityLabel,
+    category: 'rates',
+    title: `Silver Rates Today: ${fmt(perKg)}/kg · ${fmt(per100g)}/100g (${silverTag})`,
+    body: `India retail silver desk — updated daily with national bullion rates. ${formatUpdatedBadge(now)}.`,
+    image_url: null,
+    created_at: now,
+    featured: true,
+    widget: {
+      kind: 'silver',
+      label: 'Silver · India Retail',
+      value: fmt(perKg),
+      changePct: silverChange,
+      unit: '/kg',
+      live: true,
+      cadence: 'daily',
+      updatedAt: now,
+      items: [
+        { name: 'Silver / 1kg', price: fmt(perKg), changePct: silverChange, baseline: fmtBaseline(prevKg) },
+        { name: 'Silver / 100g', price: fmt(per100g), changePct: silverChange, baseline: fmtBaseline(prevKg / 10) },
+        { name: 'Silver / 10g', price: fmt(per10g), changePct: silverChange, baseline: fmtBaseline(prevKg / 100) },
+        { name: 'Day change', price: `${silverTag} · ${amt(perKg, silverChange)}`, changePct: silverChange },
+      ],
+    },
+  }));
 
   return cards;
 }
 
-/** City petrol/diesel desk — base pumps + crude day move */
+/** City petrol / diesel / Speed — published daily desks (national oil-company city rates). */
 async function fetchFuelCards(location: DailyLocation): Promise<CityNews[]> {
-  const bases: Record<string, { petrol: number; diesel: number }> = {
-    delhi: { petrol: 94.77, diesel: 87.67 },
-    'new delhi': { petrol: 94.77, diesel: 87.67 },
-    mumbai: { petrol: 104.81, diesel: 92.15 },
-    bengaluru: { petrol: 102.99, diesel: 89.92 },
-    bangalore: { petrol: 102.99, diesel: 89.92 },
-    chennai: { petrol: 101.4, diesel: 93.4 },
-    hyderabad: { petrol: 107.46, diesel: 95.72 },
-    kolkata: { petrol: 105.41, diesel: 92.76 },
-    pune: { petrol: 104.82, diesel: 91.98 },
-    chandigarh: { petrol: 94.52, diesel: 82.45 },
-    jaipur: { petrol: 104.72, diesel: 90.14 },
-    lucknow: { petrol: 95.3, diesel: 88.1 },
-    ahmedabad: { petrol: 94.7, diesel: 89.95 },
-  };
-  const key = location.city.trim().toLowerCase();
-  const base = bases[key] || { petrol: 96.5, diesel: 89.2 };
-  const crude = await fetchYahooQuote('CL=F');
-  const adj = crude ? crude.changePct * 0.15 : 0;
-  const petrol = Math.round((base.petrol * (1 + adj / 100)) * 100) / 100;
-  const diesel = Math.round((base.diesel * (1 + adj / 100)) * 100) / 100;
-  const change = crude?.changePct ?? 0;
+  const { getCityFuelDesk } = await import('./nationalMarketRates');
+  const desk = await getCityFuelDesk(location.city);
+  const key = location.city.trim().toLowerCase().replace(/\s+/g, '-');
+  const change = desk.changePct ?? 0;
+  const now = desk.updatedAt || new Date().toISOString();
 
   return [
     makeCard({
       id: liveId('rates', `fuel-${key}`),
       city: location.city,
       category: 'rates',
-      title: `${location.city} Fuel: Petrol ₹${petrol.toFixed(2)} · Diesel ₹${diesel.toFixed(2)}/L`,
-      body: `Local pump estimate adjusted for crude oil movement. Exact prices at your station may differ slightly.`,
-      image_url: getTopicImageUrl('rates', 'Petrol diesel fuel pump nozzle gas station'),
+      title: `${location.city} Fuel: Petrol ₹${desk.petrol.toFixed(2)} · Diesel ₹${desk.diesel.toFixed(2)} · Speed ₹${desk.speed.toFixed(2)}/L`,
+      body: `Daily city pump desk from national published rates (${desk.source}, ${desk.asOfDate}). Speed = regular petrol + ₹7.50 premium grade. Confirm at your local station.`,
+      image_url: null,
       featured: true,
-      created_at: new Date().toISOString(),
+      created_at: now,
       widget: {
         kind: 'fuel',
         label: `${location.city} Fuel`,
         changePct: change,
         live: true,
         cadence: 'daily',
+        updatedAt: now,
         items: [
-          { name: 'Petrol / L', price: `₹${petrol.toFixed(2)}`, changePct: change },
-          { name: 'Diesel / L', price: `₹${diesel.toFixed(2)}`, changePct: change },
+          { name: 'Petrol / L', price: `₹${desk.petrol.toFixed(2)}`, changePct: change },
+          { name: 'Diesel / L', price: `₹${desk.diesel.toFixed(2)}`, changePct: change },
+          { name: 'Speed / L', price: `₹${desk.speed.toFixed(2)}`, changePct: change },
         ],
       },
     }),
   ];
 }
 
-const TOP_VEGETABLES: Array<{ name: string; baseMin: number; baseMax: number; unit?: string }> = [
-  { name: 'Potato', baseMin: 20, baseMax: 30 },
-  { name: 'Tomato', baseMin: 30, baseMax: 45 },
-  { name: 'Onion', baseMin: 25, baseMax: 38 },
-  { name: 'Cauliflower', baseMin: 28, baseMax: 40 },
-  { name: 'Okra', baseMin: 35, baseMax: 55 },
-  { name: 'Peas', baseMin: 40, baseMax: 70 },
-  { name: 'Cucumber', baseMin: 20, baseMax: 35 },
-  { name: 'Brinjal', baseMin: 25, baseMax: 40 },
-  { name: 'Capsicum', baseMin: 40, baseMax: 70 },
-  { name: 'Spinach', baseMin: 15, baseMax: 28 },
-];
-
-const TOP_FRUITS: Array<{ name: string; baseMin: number; baseMax: number; unit?: string }> = [
-  { name: 'Apple', baseMin: 120, baseMax: 180 },
-  { name: 'Banana', baseMin: 40, baseMax: 60, unit: '/dozen' },
-  { name: 'Guava', baseMin: 50, baseMax: 80 },
-  { name: 'Pomegranate', baseMin: 140, baseMax: 220 },
-  { name: 'Orange', baseMin: 60, baseMax: 100 },
-  { name: 'Papaya', baseMin: 30, baseMax: 50 },
-  { name: 'Sweet lime', baseMin: 50, baseMax: 80 },
-  { name: 'Muskmelon', baseMin: 30, baseMax: 55 },
-  { name: 'Mango', baseMin: 80, baseMax: 150 },
-  { name: 'Grapes', baseMin: 70, baseMax: 120 },
-];
-
-function weeklyRangePrice(baseMin: number, baseMax: number, salt: number, unit = '/kg') {
-  const week = Math.floor(Date.now() / (7 * 24 * 3600 * 1000));
-  const drift = ((week + salt) % 7) - 3;
-  const min = Math.max(8, baseMin + drift);
-  const max = Math.max(min + 5, baseMax + drift);
-  return `₹${min}–₹${max}${unit}`;
-}
-
-function matchLivePrice(
-  rows: Array<{ name: string; price: string }>,
-  target: string,
-): string | null {
-  const t = target.toLowerCase();
-  const hit = rows.find(r => {
-    const n = r.name.toLowerCase();
-    return n.includes(t) || t.includes(n) || commodityEnglish(r.name).toLowerCase() === t;
-  });
-  return hit?.price || null;
-}
-
-async function loadMandiRows(location: DailyLocation): Promise<Array<{ name: string; price: string }>> {
-  const govKey = (process.env.EXPO_PUBLIC_DATA_GOV_IN_KEY || '').trim();
-  if (govKey) {
-    const gov = await fetchJson<{ records?: Array<{ commodity?: string; modal_price?: string }> }>(
-      `https://api.data.gov.in/resource/9ef84268-d588-465a-9ccd-e8c9c98fd8d3?api-key=${govKey}&format=json&limit=60&filters[district]=${encodeURIComponent(location.city)}`,
-    );
-    if (gov?.records?.length) {
-      return gov.records.map(row => ({
-        name: commodityEnglish(row.commodity || 'Item'),
-        price: `₹${row.modal_price}/qtl`,
-      }));
-    }
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  const slug = marketSlug(location.city);
-  const veg = await fetchJson<{ data?: Array<{ commodity_name?: string; price?: string; min_price?: string; max_price?: string }> }>(
-    `https://vegetablemarketprice.com/api/dataapi/market/${slug}/daypricereport?date=${today}`,
-  );
-  return (veg?.data ?? []).map(row => ({
-    name: commodityEnglish(row.commodity_name || 'Item'),
-    price: `₹${row.min_price || row.price}–${row.max_price || row.price}/kg`,
-  }));
-}
-
 async function fetchMandiCards(location: DailyLocation): Promise<CityNews[]> {
   const weekStamp = new Date().toISOString();
-  const liveRows = await loadMandiRows(location);
+  const { loadLiveMandiRows, matchLiveMandiPrice, produceForSeason, SEASONAL_VEGETABLES, SEASONAL_FRUITS, currentMandiSeason, mandiSeasonLabel } = await import('./seasonalMandi');
+  const liveRows = await loadLiveMandiRows(location);
 
-  const vegItems = TOP_VEGETABLES.map((row, i) => ({
-    name: row.name,
-    price: matchLivePrice(liveRows, row.name)
-      || weeklyRangePrice(row.baseMin, row.baseMax, i, row.unit || '/kg'),
-  }));
+  const vegItems = produceForSeason(SEASONAL_VEGETABLES, currentMandiSeason(), 10)
+    .map((row) => {
+      const price = matchLiveMandiPrice(liveRows, row.name);
+      if (!price || /[–-]/.test(price)) return null;
+      return { name: row.name, price, trend7d: 0 };
+    })
+    .filter((r): r is { name: string; price: string; trend7d: number } => !!r);
 
-  const fruitItems = TOP_FRUITS.map((row, i) => ({
-    name: row.name,
-    price: matchLivePrice(liveRows, row.name)
-      || weeklyRangePrice(row.baseMin, row.baseMax, i + 20, row.unit || '/kg'),
-  }));
+  const fruitItems = produceForSeason(SEASONAL_FRUITS, currentMandiSeason(), 10)
+    .map((row) => {
+      const price = matchLiveMandiPrice(liveRows, row.name);
+      if (!price || /[–-]/.test(price)) return null;
+      return {
+        name: row.name.replace(/\s*\(late\)\s*/i, '').trim(),
+        price,
+        trend7d: 0,
+      };
+    })
+    .filter((r): r is { name: string; price: string; trend7d: number } => !!r);
+
+  // Fill from exact live desk when seasonal matches are thin.
+  if (vegItems.length < 6) {
+    for (const row of liveRows) {
+      if (vegItems.length >= 12) break;
+      if (fruitItems.some(f => f.name.toLowerCase() === row.name.toLowerCase())) continue;
+      if (/wheat|rice|maize|bajra|ragi|jowar|mustard|moong/i.test(row.name)) continue;
+      if (vegItems.some(v => v.name.toLowerCase() === row.name.toLowerCase())) continue;
+      vegItems.push({ name: row.name, price: row.price, trend7d: 0 });
+    }
+  }
 
   return [
     makeCard({
       id: liveId('rates', `weekly-veg-${location.city}`),
       city: location.city,
       category: 'rates',
-      title: `Top 10 Vegetables: This week’s ${location.city} market rates`,
-      body: `Weekly vegetable board for ${location.city}. Ranges are approximate and may vary by local mandi and retail.`,
-      image_url: getTopicImageUrl('rates', 'vegetables market produce India'),
+      title: `Seasonal Vegetables · ${mandiSeasonLabel(currentMandiSeason())}: ${location.city} market rates`,
+      body: `Exact mandi bhaav for ${location.city} (${mandiSeasonLabel(currentMandiSeason())}). ${formatUpdatedBadge(weekStamp)}.`,
+      image_url: null,
       featured: true,
       created_at: weekStamp,
       widget: {
         kind: 'mandi',
-        label: `${location.city} · Top 10 Vegetables`,
+        label: `${location.city} · Top Vegetables`,
         items: vegItems,
         live: liveRows.length > 0,
-        cadence: 'weekly',
+        cadence: 'daily',
+        updatedAt: weekStamp,
       },
     }),
     makeCard({
       id: liveId('rates', `weekly-fruit-${location.city}`),
       city: location.city,
       category: 'rates',
-      title: `Top 10 Fruits: Apple, Banana, Pomegranate — ${location.city} weekly rates`,
-      body: `Weekly fruit board for ${location.city}. Fresh rates for this week; local mandi and retail prices may differ.`,
-      image_url: getTopicImageUrl('rates', 'fresh fruits market India'),
+      title: `Seasonal Fruits · ${mandiSeasonLabel(currentMandiSeason())}: ${location.city} rates`,
+      body: `Exact fruit desk for ${location.city} (${mandiSeasonLabel(currentMandiSeason())}). ${formatUpdatedBadge(weekStamp)}.`,
+      image_url: null,
       featured: true,
       created_at: weekStamp,
       widget: {
         kind: 'mandi',
-        label: `${location.city} · Top 10 Fruits`,
+        label: `${location.city} · Top Fruits`,
         items: fruitItems,
         live: liveRows.length > 0,
-        cadence: 'weekly',
+        cadence: 'daily',
+        updatedAt: weekStamp,
       },
     }),
   ];
 }
 
-async function fetchRatesCards(location: DailyLocation): Promise<CityNews[]> {
+async function fetchGrainsMilletsCards(location: DailyLocation): Promise<CityNews[]> {
+  const weekStamp = new Date().toISOString();
+  const { loadLiveMandiRows, matchLiveMandiPrice } = await import('./seasonalMandi');
+  const liveRows = await loadLiveMandiRows(location);
+
+  const grainNames = [
+    'Wheat / Gehu',
+    'Rice · Basmati',
+    'Rice · Parmal',
+    'Maize / Makka',
+  ];
+  const milletNames = [
+    'Pearl Millet / Bajra',
+    'Finger Millet / Ragi',
+    'Sorghum / Jowar',
+    'Foxtail Millet / Kangni',
+    'Barnyard Millet / Sanwa',
+  ];
+
+  const grainItems = grainNames
+    .map((name) => {
+      const price = matchLiveMandiPrice(liveRows, name.split('/')[0].trim())
+        || matchLiveMandiPrice(liveRows, name);
+      if (!price || /[–-]/.test(price)) return null;
+      return { name, price, changePct: 0 };
+    })
+    .filter((r): r is { name: string; price: string; changePct: number } => !!r);
+
+  const milletItems = milletNames
+    .map((name) => {
+      const price = matchLiveMandiPrice(liveRows, name.split('/')[0].trim())
+        || matchLiveMandiPrice(liveRows, name);
+      if (!price || /[–-]/.test(price)) return null;
+      return { name, price, changePct: 0 };
+    })
+    .filter((r): r is { name: string; price: string; changePct: number } => !!r);
+
+  // Also include any exact live anaaj rows not already listed.
+  for (const row of liveRows) {
+    if (!/wheat|rice|maize|bajra|ragi|jowar|mustard|moong|millet/i.test(row.name)) continue;
+    if (grainItems.some(g => g.name.toLowerCase().includes(row.name.toLowerCase().slice(0, 5)))) continue;
+    if (milletItems.some(g => g.name.toLowerCase().includes(row.name.toLowerCase().slice(0, 5)))) continue;
+    if (/bajra|ragi|jowar|millet/i.test(row.name)) milletItems.push({ name: row.name, price: row.price, changePct: 0 });
+    else grainItems.push({ name: row.name, price: row.price, changePct: 0 });
+  }
+
+  return [
+    makeCard({
+      id: liveId('rates', `weekly-grains-${location.city}`),
+      city: location.city,
+      category: 'rates',
+      title: `Grains Mandi Board: Wheat, Rice, Maize — ${location.city}`,
+      body: `Exact staples board for ${location.city}. ${formatUpdatedBadge(weekStamp)}.`,
+      image_url: null,
+      featured: true,
+      created_at: weekStamp,
+      widget: {
+        kind: 'mandi',
+        label: `${location.city} · Grains`,
+        items: grainItems,
+        live: grainItems.length > 0,
+        cadence: 'daily',
+        updatedAt: weekStamp,
+      },
+    }),
+    makeCard({
+      id: liveId('rates', `weekly-millets-${location.city}`),
+      city: location.city,
+      category: 'rates',
+      title: `Shree Anna Millets: Bajra, Ragi, Jowar — ${location.city}`,
+      body: `Exact millets mandi board for ${location.city}. ${formatUpdatedBadge(weekStamp)}.`,
+      image_url: null,
+      featured: true,
+      created_at: weekStamp,
+      widget: {
+        kind: 'mandi',
+        label: `${location.city} · Shree Anna`,
+        items: milletItems,
+        live: milletItems.length > 0,
+        cadence: 'daily',
+        updatedAt: weekStamp,
+      },
+    }),
+  ];
+}
+
+async function fetchLocalRatesCards(location: DailyLocation): Promise<CityNews[]> {
+  const fx = await fetchJson<{ rates?: Record<string, number> }>('https://open.er-api.com/v6/latest/USD');
+  const inr = fx?.rates?.INR ?? null;
+  const citySlug = location.city.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32) || 'local';
+  const [metals, fuel, mandi, grains] = await Promise.all([
+    fetchMetalCards(inr, location.city, citySlug),
+    fetchFuelCards(location),
+    fetchMandiCards(location),
+    fetchGrainsMilletsCards(location),
+  ]);
+  return [...metals, ...fuel, ...mandi, ...grains];
+}
+
+async function fetchFxCard(cityLabel: string): Promise<CityNews | null> {
   const fx = await fetchJson<{ rates?: Record<string, number>; time_last_update_utc?: string }>(
     'https://open.er-api.com/v6/latest/USD',
   );
   const inr = fx?.rates?.INR;
-  const cards: CityNews[] = [];
+  if (!inr) return null;
   const now = new Date().toISOString();
+  return makeCard({
+    id: liveId('rates', `usd-inr-${cityLabel.toLowerCase()}`),
+    city: cityLabel,
+    category: 'rates',
+    title: `USD/INR Spot: ${inr.toFixed(2)}`,
+    body: `International FX desk · ${formatUpdatedBadge(fx?.time_last_update_utc || now)}.`,
+    image_url: null,
+    source_url: 'https://www.exchangerate-api.com',
+    featured: true,
+    created_at: now,
+    widget: {
+      kind: 'fx',
+      label: 'USD / INR',
+      value: inr.toFixed(2),
+      changePct: null,
+      live: true,
+      cadence: 'daily',
+      updatedAt: fx?.time_last_update_utc || now,
+    },
+  });
+}
 
-  if (inr) {
-    cards.push(makeCard({
-      id: liveId('rates', 'usd-inr'),
-      city: 'National',
-      category: 'rates',
-      title: `Dollar vs Rupee: USD/INR ab ${inr.toFixed(2)} pe`,
-      body: `Live currency desk · updated ${fx?.time_last_update_utc || 'just now'}.`,
-      image_url: 'https://images.unsplash.com/photo-1580519542036-c47de6196ba5?auto=format&fit=crop&w=800&q=60',
-      source_url: 'https://www.exchangerate-api.com',
-      featured: true,
-      created_at: now,
-      widget: {
-        kind: 'fx',
-        label: 'USD / INR',
-        value: inr.toFixed(2),
-        changePct: null,
-        live: true,
-        cadence: 'daily',
-      },
-    }));
-  }
-
-  const [metals, fuel, nifty, sensex, mandi] = await Promise.all([
+async function fetchNationalRatesCards(): Promise<CityNews[]> {
+  const fx = await fetchJson<{ rates?: Record<string, number> }>('https://open.er-api.com/v6/latest/USD');
+  const inr = fx?.rates?.INR;
+  const [metals, nifty, sensex] = await Promise.all([
     fetchMetalCards(inr ?? null),
-    fetchFuelCards(location),
     fetchIndexQuote('^NSEI', 'NIFTY 50'),
     fetchIndexQuote('^BSESN', 'SENSEX'),
-    fetchMandiCards(location),
   ]);
-  cards.push(...metals, ...fuel);
+  const cards: CityNews[] = [...metals];
   if (nifty) cards.push(nifty);
   if (sensex) cards.push(sensex);
-  cards.push(...mandi);
   return cards;
+}
+
+async function fetchInternationalMarketCards(): Promise<CityNews[]> {
+  const [fx, dow, nasdaq, sp500] = await Promise.all([
+    fetchFxCard('International'),
+    fetchIndexQuote('^DJI', 'DOW JONES'),
+    fetchIndexQuote('^IXIC', 'NASDAQ'),
+    fetchIndexQuote('^GSPC', 'S&P 500'),
+  ]);
+  return [fx, dow, nasdaq, sp500].filter((c): c is CityNews => !!c);
+}
+
+/** @deprecated Use fetchLocalRatesCards / fetchNationalRatesCards by region */
+async function fetchRatesCards(location: DailyLocation): Promise<CityNews[]> {
+  const [local, national] = await Promise.all([
+    fetchLocalRatesCards(location),
+    fetchNationalRatesCards(),
+  ]);
+  return [...national, ...local];
 }
 
 /** Convert Sparks (reels) into tall Explore tiles */
@@ -1048,9 +1475,11 @@ export function sparksToDailyItems(reels: Reel[], city: string): CityNews[] {
     city,
     category: 'general',
     title: reel.caption?.trim()
-      ? `Spark: ${reel.caption.trim()}`
-      : `${reel.shop_name || 'Local shop'} ka naya Spark`,
-    body: reel.shop_name ? `${reel.shop_name} ka short video · Sparks se seedha Daily pe.` : 'Local Spark · short video news vibe.',
+      ? `Moment: ${reel.caption.trim()}`
+      : `New Moment from ${reel.shop_name || 'a local shop'}`,
+    body: reel.shop_name
+      ? `Short video from ${reel.shop_name} · featured on Daily from Moments.`
+      : 'Local Moment · short-form video update.',
     image_url: reel.media_url || resolveFeatureImage('general', reel.id, null, reel.caption || reel.shop_name || 'spark'),
     media_type: 'video',
     featured: true,
@@ -1060,27 +1489,45 @@ export function sparksToDailyItems(reels: Reel[], city: string): CityNews[] {
   }));
 }
 
-export async function fetchDailyPublicFeed(location: DailyLocation): Promise<CityNews[]> {
-  const [localNews, nationalNews, alerts, events, weather, rates] = await Promise.all([
+export async function fetchDailyPublicFeed(
+  location: DailyLocation,
+  region: DailyRegion = 'local',
+): Promise<CityNews[]> {
+  if (region === 'national') {
+    const stateQuery = location.state
+      ? `${location.state} India alert OR warning OR emergency`
+      : 'India national emergency alert';
+    const [nationalNews, alerts, events, rates] = await Promise.all([
+      fetchNewsCategory(location, 'general', 'India national headlines economy politics', 'national'),
+      fetchNewsCategory(location, 'alerts', stateQuery, 'national'),
+      fetchNewsCategory(location, 'event', 'India national festival event celebration', 'national'),
+      fetchNationalRatesCards(),
+    ]);
+    return sortDailyByNewest(dedupeDailyItems([...rates, ...alerts, ...events, ...nationalNews]));
+  }
+
+  if (region === 'international') {
+    const [worldNews, techNews, markets] = await Promise.all([
+      fetchNewsCategory(location, 'general', 'world international headlines global news', 'international'),
+      fetchNewsCategory(location, 'general', 'technology AI startup global innovation', 'international'),
+      fetchInternationalMarketCards(),
+    ]);
+    return sortDailyByNewest(dedupeDailyItems([...markets, ...techNews, ...worldNews]));
+  }
+
+  const stateAlert = location.state
+    ? `${location.city} OR ${location.state} (alert OR warning OR emergency OR flood OR rain OR strike)`
+    : `${location.city} (alert OR warning OR emergency OR flood OR rain OR strike)`;
+  const [localNews, alerts, events, weather, rates] = await Promise.all([
     fetchNewsCategory(location, 'general', `${location.city} India news`),
-    fetchNewsCategory(location, 'general', 'India national headlines', true),
-    fetchNewsCategory(location, 'alerts', `${location.city} (alert OR warning OR emergency OR flood OR rain OR strike)`),
+    fetchNewsCategory(location, 'alerts', stateAlert),
     fetchNewsCategory(location, 'event', `${location.city} (festival OR event OR concert OR exhibition OR mela)`),
     fetchWeatherCards(location),
-    fetchRatesCards(location),
+    fetchLocalRatesCards(location),
   ]);
 
-  const merged = [...weather, ...rates, ...alerts, ...events, ...localNews, ...nationalNews];
-  const seen = new Set<string>();
-  const unique = merged.filter(item => {
-    const key = item.title.toLowerCase();
-    if (seen.has(key) || seen.has(item.id)) return false;
-    seen.add(key);
-    seen.add(item.id);
-    return true;
-  });
-
-  return sortDailyByNewest(unique);
+  const merged = [...rates, ...weather, ...alerts, ...events, ...localNews];
+  return sortDailyByNewest(dedupeDailyItems(merged));
 }
 
 function storageKey(userId: string) {
@@ -1140,4 +1587,28 @@ export async function addLiveDailyComment(userId: string, newsId: string, text: 
   store.comments[newsId] = [...(store.comments[newsId] ?? []), comment];
   await writeInteractions(userId, store);
   return comment;
+}
+
+/** Load comments for any Daily item (Supabase or live cache). */
+export async function fetchDailyComments(newsId: string, userId?: string): Promise<CityNewsComment[]> {
+  if (isLiveDailyItem(newsId)) {
+    if (!userId) return [];
+    return getLiveDailyComments(userId, newsId);
+  }
+  const { getCityNewsComments } = await import('./api');
+  return getCityNewsComments(newsId);
+}
+
+/** Post a comment to Supabase or the live interaction cache. */
+export async function postDailyComment(
+  newsId: string,
+  userId: string,
+  text: string,
+  profile?: Profile | null,
+): Promise<CityNewsComment> {
+  if (isLiveDailyItem(newsId)) {
+    return addLiveDailyComment(userId, newsId, text, profile);
+  }
+  const { addCityNewsComment } = await import('./api');
+  return addCityNewsComment(userId, newsId, text);
 }

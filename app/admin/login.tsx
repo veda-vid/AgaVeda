@@ -4,7 +4,7 @@ import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Alert, Styl
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
 import { signInWithEmailPassword, isDemoAuthEnabled } from '../../lib/supabase';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 
 export default function AdminLoginScreen() {
   const router = useRouter();
@@ -86,7 +86,7 @@ export default function AdminLoginScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flexGrow: 1, padding: 24, backgroundColor: Colors.bg, gap: 14, justifyContent: 'center' },
   brand: { fontSize: 28, fontFamily: Fonts.displayXBold, fontWeight: '900', color: Colors.orange },
   sub: { fontSize: 13, color: Colors.sub, lineHeight: 18 },
@@ -96,5 +96,5 @@ const s = StyleSheet.create({
   btn: { backgroundColor: Colors.orange, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginTop: 10 },
   btnText: { color: Colors.white, fontWeight: '900', fontSize: 15 },
   error: { color: Colors.red, fontSize: 13, marginTop: 8 },
-});
+}));
 

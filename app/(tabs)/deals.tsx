@@ -4,7 +4,7 @@ import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, StyleSheet }
 import { useAuthStore } from '../../stores/authStore';
 import { getDiscountedProducts } from '../../lib/api';
 import { useScreenRefresh } from '../../hooks/useScreenRefresh';
-import { Colors } from '../../constants/theme';
+import { Colors, createDynamicStyles } from '../../constants/theme';
 
 export default function DealsScreen() {
   const profile = useAuthStore(s => s.profile);
@@ -98,6 +98,7 @@ export default function DealsScreen() {
             {...scrollHandlers}
             contentContainerStyle={{ padding: 16, paddingBottom: 80, gap: 12 }}
             showsVerticalScrollIndicator={false}
+            decelerationRate="fast"
             ListEmptyComponent={
               <View style={{ alignItems: 'center', paddingTop: 60, gap: 12 }}>
                 <Text style={{ fontSize: 48 }}>🏷️</Text>
@@ -111,7 +112,7 @@ export default function DealsScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root:        { flex: 1, backgroundColor: Colors.bg },
   header:      { backgroundColor: Colors.bg, paddingTop: 48, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
   title:       { fontSize: 22, fontWeight: '800', color: Colors.text },
@@ -139,4 +140,4 @@ const s = StyleSheet.create({
   cardBottom:  { borderTopWidth: 1, borderTopColor: Colors.border, padding: 12 },
   grabBtn:     { backgroundColor: Colors.orange, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
   grabBtnText: { color: Colors.white, fontWeight: '700', fontSize: 14 },
-});
+}));

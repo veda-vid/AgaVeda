@@ -8,7 +8,7 @@ import { getSupabase } from '../../lib/supabase';
 import {
   getOrCreateShopConversation, getShopMessages, sendShopMessage,
 } from '../../lib/api';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import type { Shop, ShopMessage } from '../../types';
 
 type Props = {
@@ -137,7 +137,7 @@ export function EnquiryChatDrawer({
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   overlay: { flex: 1, justifyContent: 'flex-end' },
   backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#00000088' },
   sheet: {
@@ -187,4 +187,4 @@ const s = StyleSheet.create({
   sendBtn: { backgroundColor: Colors.orange, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11 },
   sendBtnDisabled: { opacity: 0.5 },
   sendBtnText: { color: Colors.white, fontFamily: Fonts.bodySemiBold, fontWeight: '700', fontSize: 13 },
-});
+}));

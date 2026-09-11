@@ -5,9 +5,11 @@ import {
   View, Text, Image, ScrollView, TouchableOpacity, StyleSheet,
   Linking, Platform, Animated, PanResponder, Dimensions,
 } from 'react-native';
-import { Colors, Fonts, Radius } from '../../constants/theme';
-import { buildInShortsContent, getTopicImageUrl } from '../../lib/dailyPublicFeed';
-import { categoryMeta, formatTimeAgo, unicodeContentStyle } from './DailyMosaic';
+import { SafeVideoPlayer } from '../media/SafeVideoPlayer';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
+import { buildInShortsContent, heroImageFor, isRateWidgetVisual } from '../../lib/dailyPublicFeed';
+import { RateVisualCard } from './RateVisualCard';
+import { categoryMeta, formatTimeAgo, unicodeContentStyle } from './dailyShared';
 import type { CityNews } from '../../types';
 
 type Props = {
@@ -17,6 +19,7 @@ type Props = {
   onRepost: () => void;
   onComment: () => void;
   onSave: () => void;
+  onTogglePin?: () => void;
   onClose: () => void;
   saved?: boolean;
 };
@@ -29,15 +32,90 @@ function publisherLabel(item: CityNews) {
 }
 
 function heroFor(item: CityNews, attempt = 0) {
-  if (
-    attempt === 0
-    && item.image_url
-    && /^https?:\/\//i.test(item.image_url)
-    && !/placehold|picsum\.photos|source\.unsplash/i.test(item.image_url)
-  ) {
-    return item.image_url;
+  return heroImageFor(item, attempt);
+}
+
+function publisherInitial(item: CityNews) {
+  const label = publisherLabel(item);
+  return label.charAt(0).toUpperCase();
+}
+
+function trendLabel(trend7d?: number | null) {
+  if (trend7d == null || Number.isNaN(trend7d)) return '—';
+  const arrow = trend7d >= 0 ? '▲' : '▼';
+  const sign = trend7d >= 0 ? '+' : '';
+  return `${arrow} ${sign}${Math.abs(trend7d).toFixed(1)}%`;
+}
+
+function CommodityTable({ item }: { item: CityNews }) {
+  const rows = item.widget?.items ?? [];
+  if (!rows.length) return null;
+  const isMetal = item.widget?.kind === 'gold' || item.widget?.kind === 'silver';
+  const isMandi = item.widget?.kind === 'mandi';
+  const showFullTable = isMetal || isMandi || item.widget?.kind === 'fuel' || item.widget?.kind === 'index';
+
+  if (!showFullTable) {
+    return (
+      <View style={[
+        s.rateBox,
+        item.widget?.kind === 'gold' && s.rateGold,
+        item.widget?.kind === 'silver' && s.rateSilver,
+      ]}
+      >
+        <Text style={s.rateLabel}>{item.widget?.label}</Text>
+        {rows.map(row => (
+          <View key={row.name} style={s.rateRow}>
+            <Text style={[s.rateName, unicodeContentStyle]}>{row.name}</Text>
+            <View style={s.rateRight}>
+              <Text style={s.ratePrice}>{row.price}</Text>
+                      {row.changePct != null ? (
+                        <Text style={[s.chg, row.changePct >= 0 ? s.chgUp : s.chgDown]}>
+                          {row.changePct >= 0 ? '▲' : '▼'} {row.changePct >= 0 ? '+' : ''}{Math.abs(row.changePct).toFixed(1)}%
+                        </Text>
+                      ) : null}
+            </View>
+          </View>
+        ))}
+      </View>
+    );
   }
-  return getTopicImageUrl(item.category, item.title, attempt);
+
+  return (
+    <View style={[
+      s.rateBox,
+      item.widget?.kind === 'gold' && s.rateGold,
+      item.widget?.kind === 'silver' && s.rateSilver,
+    ]}
+    >
+      <View style={s.tableHeader}>
+        <Text style={s.rateLabel}>{item.widget?.label}</Text>
+        {item.widget?.updatedAt ? (
+          <Text style={s.updatedBadge}>
+            {item.widget.cadence === 'weekly' ? 'WEEKLY' : 'LIVE'} · {formatTimeAgo(item.widget.updatedAt)}
+          </Text>
+        ) : null}
+      </View>
+      <View style={s.tableHeadRow}>
+        <Text style={[s.tableHead, s.colName]}>Commodity</Text>
+        <Text style={[s.tableHead, s.colPrice]}>Current price</Text>
+        <Text style={[s.tableHead, s.colTrend]}>7-day trend</Text>
+      </View>
+      {rows.filter(row => row.name !== 'Day change').map(row => (
+        <View key={row.name} style={s.tableRow}>
+          <Text style={[s.tableCell, s.colName, unicodeContentStyle]} numberOfLines={2}>{row.name}</Text>
+          <Text style={[s.tableCell, s.colPrice, s.ratePrice]}>{row.price}</Text>
+          <Text style={[
+            s.tableCell,
+            s.colTrend,
+            (row.trend7d ?? row.changePct ?? 0) >= 0 ? s.chgUp : s.chgDown,
+          ]}
+          >
+            {trendLabel(row.trend7d ?? row.changePct)}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
 }
 
 export function PinterestArticleView({
@@ -47,12 +125,16 @@ export function PinterestArticleView({
   onRepost,
   onComment,
   onSave,
+  onTogglePin,
   onClose,
   saved = false,
 }: Props) {
   const meta = categoryMeta(item.category);
+  const isVideo = item.media_type === 'video' && !!item.image_url;
+  const isRateHero = isRateWidgetVisual(item);
   const [heroAttempt, setHeroAttempt] = useState(0);
   const [heroUri, setHeroUri] = useState(heroFor(item, 0));
+  const [videoMuted, setVideoMuted] = useState(true);
   const translateY = useRef(new Animated.Value(0)).current;
 
   const { headline, summary, takeaways } = useMemo(
@@ -103,13 +185,43 @@ export function PinterestArticleView({
         <View style={s.swipeHint} />
         <ScrollView showsVerticalScrollIndicator={false} bounces contentContainerStyle={s.scroll}>
           <View style={s.heroWrap}>
-            <Image source={{ uri: heroUri }} style={s.hero} resizeMode="cover" onError={onHeroError} />
+            {isVideo ? (
+              <TouchableOpacity
+                style={s.hero}
+                activeOpacity={0.95}
+                onPress={() => setVideoMuted(prev => !prev)}
+                accessibilityLabel={videoMuted ? 'Unmute video' : 'Mute video'}
+              >
+                <SafeVideoPlayer
+                  uri={item.image_url!}
+                  posterUri={heroUri}
+                  style={s.hero}
+                  contentFit="cover"
+                  active
+                  loop
+                  muted={videoMuted}
+                />
+                <View style={s.videoOverlay}>
+                  <Text style={s.videoMuteChip}>{videoMuted ? 'Tap to unmute' : 'Sound on'}</Text>
+                </View>
+              </TouchableOpacity>
+            ) : isRateHero && item.widget ? (
+              <RateVisualCard widget={item.widget} />
+            ) : (
+              <Image source={{ uri: heroUri }} style={s.hero} resizeMode="cover" onError={onHeroError} />
+            )}
             <View style={s.heroTop}>
               <View style={s.publisherBadge}>
+                <View style={s.publisherLogo}>
+                  <Text style={s.publisherLogoText}>{publisherInitial(item)}</Text>
+                </View>
                 <Text style={s.publisherText}>{publisherLabel(item)}</Text>
               </View>
               <Text style={s.timeBadge}>{formatTimeAgo(item.created_at)}</Text>
             </View>
+            <TouchableOpacity onPress={onShare} style={s.shareFab} accessibilityLabel="Share story">
+              <Text style={s.shareFabText}>✈️</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={onClose} style={s.closeFab}>
               <Text style={s.closeFabText}>✕</Text>
             </TouchableOpacity>
@@ -121,29 +233,7 @@ export function PinterestArticleView({
             </View>
             <Text style={[s.headline, unicodeContentStyle]}>{headline}</Text>
 
-            {item.widget?.items?.length ? (
-              <View style={[
-                s.rateBox,
-                item.widget.kind === 'gold' && s.rateGold,
-                item.widget.kind === 'silver' && s.rateSilver,
-              ]}
-              >
-                <Text style={s.rateLabel}>{item.widget.label}</Text>
-                {item.widget.items.map(row => (
-                  <View key={row.name} style={s.rateRow}>
-                    <Text style={[s.rateName, unicodeContentStyle]}>{row.name}</Text>
-                    <View style={s.rateRight}>
-                      <Text style={s.ratePrice}>{row.price}</Text>
-                      {row.changePct != null ? (
-                        <Text style={[s.chg, row.changePct >= 0 ? s.chgUp : s.chgDown]}>
-                          {row.changePct >= 0 ? '+' : ''}{row.changePct.toFixed(2)}%
-                        </Text>
-                      ) : null}
-                    </View>
-                  </View>
-                ))}
-              </View>
-            ) : null}
+            {item.widget?.items?.length ? <CommodityTable item={item} /> : null}
 
             <Text style={s.section}>Summary</Text>
             <Text style={[s.summary, unicodeContentStyle]}>{summary}</Text>
@@ -181,9 +271,15 @@ export function PinterestArticleView({
             <Text style={s.actionIcon}>🔁</Text>
             <Text style={s.actionLabel}>Repost</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.actionBtn} onPress={onSave} accessibilityLabel="Save">
+          <TouchableOpacity
+            style={s.actionBtn}
+            onPress={onTogglePin ?? onSave}
+            accessibilityLabel={saved ? 'Saved' : 'Save'}
+          >
             <Text style={s.actionIcon}>{saved ? '📌' : '＋'}</Text>
-            <Text style={s.actionLabel}>Save</Text>
+            <Text style={[s.actionLabel, saved && s.actionLabelSaved]}>
+              {saved ? 'Saved' : 'Save'}
+            </Text>
           </TouchableOpacity>
         </View>
       </Animated.View>
@@ -191,7 +287,7 @@ export function PinterestArticleView({
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: { flex: 1, justifyContent: 'flex-end' },
   blurBg: {
     ...StyleSheet.absoluteFillObject,
@@ -220,6 +316,16 @@ const s = StyleSheet.create({
   scroll: { paddingBottom: 100 },
   heroWrap: { width: '100%', height: 280, backgroundColor: Colors.card },
   hero: { width: '100%', height: '100%' },
+  videoOverlay: {
+    position: 'absolute',
+    bottom: 12,
+    left: 12,
+    backgroundColor: '#00000099',
+    borderRadius: Radius.full,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  videoMuteChip: { color: Colors.white, fontSize: 11, fontWeight: '800' },
   heroTop: {
     position: 'absolute',
     top: 14,
@@ -231,12 +337,25 @@ const s = StyleSheet.create({
     gap: 8,
   },
   publisherBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     backgroundColor: '#000000BB',
     borderRadius: Radius.full,
     paddingHorizontal: 10,
     paddingVertical: 5,
+    maxWidth: '72%',
   },
-  publisherText: { color: Colors.white, fontSize: 11, fontWeight: '800' },
+  publisherLogo: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  publisherLogoText: { color: Colors.white, fontSize: 11, fontWeight: '900' },
+  publisherText: { color: Colors.white, fontSize: 11, fontWeight: '800', flexShrink: 1 },
   timeBadge: {
     color: Colors.white,
     fontSize: 11,
@@ -258,6 +377,18 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  shareFab: {
+    position: 'absolute',
+    top: 12,
+    right: 56,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#00000099',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shareFabText: { fontSize: 16 },
   closeFabText: { color: Colors.white, fontSize: 16, fontWeight: '700' },
   body: { padding: 18, gap: 6 },
   catPill: {
@@ -294,7 +425,33 @@ const s = StyleSheet.create({
     borderColor: '#CBD5E166',
     backgroundColor: '#94A3B80D',
   },
-  rateLabel: { color: Colors.orange, fontWeight: '900', fontSize: 11, letterSpacing: 0.5 },
+  tableHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  rateLabel: { color: Colors.orange, fontWeight: '900', fontSize: 11, letterSpacing: 0.5, flex: 1 },
+  updatedBadge: { color: Colors.sub, fontSize: 10, fontWeight: '700' },
+  tableHeadRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border2,
+    paddingBottom: 6,
+    marginBottom: 2,
+  },
+  tableHead: { color: Colors.dim, fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.border,
+  },
+  tableCell: { fontSize: 12 },
+  colName: { flex: 2.4 },
+  colPrice: { flex: 1.6, textAlign: 'right' },
+  colTrend: { flex: 1.2, textAlign: 'right', fontWeight: '800' },
   rateRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   rateName: { color: Colors.sub, fontSize: 13, flex: 1 },
   rateRight: { alignItems: 'flex-end' },
@@ -328,4 +485,5 @@ const s = StyleSheet.create({
   actionIcon: { fontSize: 22 },
   actionCount: { color: Colors.sub, fontSize: 10, fontWeight: '700', marginTop: 2 },
   actionLabel: { color: Colors.sub, fontSize: 9, fontWeight: '700', marginTop: 2 },
-});
+  actionLabelSaved: { color: Colors.orange },
+}));

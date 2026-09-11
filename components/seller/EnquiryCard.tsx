@@ -3,7 +3,7 @@ import { useState } from 'react';
 import {
   View, Text, Image, Pressable, StyleSheet, Modal, Linking, Alert, Platform,
 } from 'react-native';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import { hapticLight } from '../../lib/haptics';
 import {
   ENQUIRY_STATUS_COLORS, ENQUIRY_STATUS_LABELS, ENQUIRY_TYPE_LABELS,
@@ -145,7 +145,7 @@ export function EnquiryCard({ enquiry, shop, onStatusChange, onChat }: Props) {
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   card: {
     backgroundColor: Colors.card,
     borderRadius: 16,
@@ -210,4 +210,4 @@ const s = StyleSheet.create({
   modalOptionActive: { backgroundColor: Colors.orange + '18' },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   modalOptionText: { color: Colors.text, fontSize: 14, fontFamily: Fonts.bodySemiBold, fontWeight: '600' },
-});
+}));

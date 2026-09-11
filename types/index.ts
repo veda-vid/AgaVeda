@@ -13,7 +13,10 @@ export interface Profile {
   city: string;
   lat: number | null;
   lng: number | null;
+  delivery_address?: string | null;
   radius_km: number;          // discovery radius
+  push_enabled?: boolean;
+  push_token?: string | null;
   is_verified: boolean;
   is_suspended: boolean;
   created_at: string;
@@ -196,7 +199,8 @@ export interface Product {
 export interface Post {
   id: string;
   product_id: string | null;
-  shop_id: string;
+  shop_id: string | null;
+  service_provider_id?: string | null;
   caption: string;
   media_urls: string[];
   media_type: 'image' | 'video';
@@ -208,6 +212,7 @@ export interface Post {
   total_reposts?: number;
   created_at: string;
   // joined
+  deleted_at?: string | null;
   shop?: Shop;
   product?: Product;
   is_liked?: boolean;
@@ -266,6 +271,9 @@ export interface ServiceProvider {
   presence_status?: PresenceStatus;
   custom_status?: string | null;
   last_active_at?: string;
+  base_rate_label?: string | null;
+  portfolio_photos?: string[];
+  coverage_radius_km?: number;
   created_at: string;
   // computed
   distance_km?: number;
@@ -304,12 +312,32 @@ export interface ProConversation {
   updated_at: string;
 }
 
+export interface ProConversationWithBuyer extends ProConversation {
+  buyer?: Pick<Profile, 'id' | 'name' | 'avatar_url' | 'phone'> | null;
+}
+
 export interface ProMessage {
   id: string;
   conversation_id: string;
   sender_id: string;
   body: string;
   created_at: string;
+}
+
+export type ServiceRequestUrgency = 'emergency' | 'today' | 'scheduled';
+export type ServiceRequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface ServiceRequest {
+  id: string;
+  buyer_id: string;
+  service_provider_id: string;
+  urgency: ServiceRequestUrgency;
+  scheduled_date: string | null;
+  subcategory: string | null;
+  description: string;
+  status: ServiceRequestStatus;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Review {
@@ -356,7 +384,7 @@ export interface Ad {
 export interface Notification {
   id: string;
   user_id: string;
-  type: 'new_product' | 'deal' | 'follow' | 'like' | 'comment' | 'system';
+  type: 'new_product' | 'deal' | 'follow' | 'like' | 'comment' | 'system' | 'order' | 'repost';
   title: string;
   body: string;
   data: Record<string, unknown>;
@@ -378,11 +406,27 @@ export interface DailyWidgetMeta {
   condition?: string;
   humidity?: number;
   wind?: number;
+  /** Precipitation probability 0–100 */
+  rainChance?: number;
+  /** Air quality index (US / European scale from Open-Meteo) */
+  aqi?: number;
+  /** WMO weather code for dynamic tile graphics */
+  weatherCode?: number;
   /** Multi-row widgets (mandi board, gold 24K/22K, petrol/diesel) */
-  items?: Array<{ name: string; price: string; changePct?: number | null }>;
+  items?: Array<{
+    name: string;
+    price: string;
+    changePct?: number | null;
+    /** Prior close / last-week baseline for comparison tables */
+    baseline?: string;
+    /** 7-day percentage move */
+    trend7d?: number | null;
+  }>;
   live?: boolean;
   /** weekly | daily cadence for rate boards */
   cadence?: 'daily' | 'weekly';
+  /** ISO timestamp for LIVE / WEEKLY badge */
+  updatedAt?: string;
 }
 
 export interface CityNews {
@@ -420,20 +464,29 @@ export interface CityNewsComment {
 
 export interface Story {
   id: string;
-  shop_id: string;
+  shop_id: string | null;
+  service_provider_id?: string | null;
   author_id: string;
   media_url: string;
   media_type: 'image' | 'video';
   caption: string;
   expires_at: string;
   created_at: string;
+  deleted_at?: string | null;
   shop_name?: string;
   shop_logo?: string | null;
+  audio_track_id?: string | null;
+  audio_title?: string | null;
+  audio_artist?: string | null;
+  audio_url?: string | null;
+  audio_start_time?: number | null;
+  audio_volume_balance?: { video: number; music: number } | null;
 }
 
 export interface Reel {
   id: string;
-  shop_id: string;
+  shop_id: string | null;
+  service_provider_id?: string | null;
   author_id: string;
   media_url: string;
   caption: string;
@@ -441,6 +494,7 @@ export interface Reel {
   total_likes: number;
   total_comments: number;
   created_at: string;
+  deleted_at?: string | null;
   shop_name?: string;
   shop_logo?: string | null;
   product_id?: string | null;
@@ -449,6 +503,8 @@ export interface Reel {
   audio_title?: string | null;
   audio_artist?: string | null;
   audio_url?: string | null;
+  audio_start_time?: number | null;
+  audio_volume_balance?: { video: number; music: number } | null;
   /** Hydrated for the current viewer */
   is_liked?: boolean;
   is_reposted?: boolean;
@@ -477,7 +533,47 @@ export interface CartItem {
   created_at: string;
   updated_at: string;
   product?: Product;
-  shop?: Shop;
+  shop?: Pick<Shop, 'id' | 'name' | 'logo_url' | 'city' | 'owner_id'>;
+}
+
+export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled' | 'failed';
+
+export interface Order {
+  id: string;
+  buyer_id: string;
+  shop_id: string;
+  status: OrderStatus;
+  total_amount: number;
+  item_subtotal: number;
+  delivery_charge: number;
+  delivery_address: string | null;
+  contact_phone: string | null;
+  order_notes: string | null;
+  placed_at: string;
+  completed_at: string | null;
+  shop?: Pick<Shop, 'id' | 'name' | 'logo_url'>;
+}
+
+export interface OrderItem {
+  id: string;
+  order_id: string;
+  product_id: string;
+  product_title: string;
+  unit_price: number;
+  quantity: number;
+  line_total: number;
+  created_at: string;
+}
+
+export interface CheckoutOrderResult {
+  order_id: string;
+  order_ref: string;
+  shop_id: string;
+  shop_name: string;
+  owner_id: string;
+  item_subtotal: number;
+  delivery_charge: number;
+  total_amount: number;
 }
 
 export interface SearchResult {

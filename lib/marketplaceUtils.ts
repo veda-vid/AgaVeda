@@ -1,5 +1,6 @@
 // lib/marketplaceUtils.ts — Marketplace shop presence, hours, and chat helpers
 
+import { Platform } from 'react-native';
 import { Colors } from '../constants/theme';
 import { SHOP_CATEGORIES } from '../constants/theme';
 import type { Shop } from '../types';
@@ -423,3 +424,44 @@ export function formatDistanceKm(value?: number): string {
   if (typeof value !== 'number' || Number.isNaN(value)) return 'Nearby';
   return `${value.toFixed(1)} km`;
 }
+
+export const MARKETPLACE_RADIUS_OPTIONS = [2, 5, 10, 25, 50] as const;
+export type MarketplaceRadiusKm = (typeof MARKETPLACE_RADIUS_OPTIONS)[number];
+
+/** @deprecated Prefer MARKETPLACE_RADIUS_OPTIONS */
+export const MARKETPLACE_RADIUS = MARKETPLACE_RADIUS_OPTIONS;
+
+export const MARKETPLACE_PAGE_SIZE = 20;
+
+export function getMarketplaceColumns(width: number): number {
+  if (width >= 1100) return 3;
+  if (width >= 680) return 2;
+  return 1;
+}
+
+/** Marker tint for map pins from hours state. */
+export function getShopMarkerColor(
+  shop: Shop,
+  now: Date = new Date(),
+): string {
+  const state = getShopHoursState(
+    shop.open_time,
+    shop.close_time,
+    now,
+    shop.operating_hours ?? null,
+  );
+  if (state === 'open') return '#10B981';
+  if (state === 'closing_soon') return '#F59E0B';
+  if (state === 'closed_before_open' || state === 'closed_after_close') return '#64748B';
+  const presence = shop.presence_status ?? (shop.is_open ? 'open' : 'closed');
+  if (presence === 'open' || presence === 'busy') return '#10B981';
+  return '#64748B';
+}
+
+/** UTF-8 safe rendering for shop names, Hindi/English descriptions. */
+export const unicodeMarketplaceStyle = Platform.select({
+  web: {
+    fontFamily: 'system-ui, "Segoe UI", "Noto Sans", "Noto Sans Devanagari", sans-serif',
+  } as object,
+  default: { fontFamily: undefined },
+});

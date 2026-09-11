@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, Modal, TextInput, TouchableOpacity, StyleSheet, Image,
-  ActivityIndicator, ScrollView, Platform, Alert, Pressable,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, Image,
+  ActivityIndicator, ScrollView, Platform, Alert, Pressable, Linking,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import { getProductsByShop } from '../../lib/api';
 import type { Product } from '../../types';
 import { MediaSourceSheet } from '../media/MediaSourceSheet';
@@ -13,6 +13,8 @@ import { FeedVideo } from '../feed/FeedVideo';
 import { SparkLocationPicker } from '../feed/SparkLocationPicker';
 import { MusicSelectorModal } from '../feed/MusicSelectorModal';
 import type { SparkAudioSelection } from '../../lib/musicSearch';
+import { clampVolumePct, DEFAULT_SPARK_VOLUME_BALANCE } from '../../lib/sparkAudioSync';
+import { agentDebugLog, flushAgentDebugLogs, persistAgentDebugLogs } from '../../lib/agentDebugLog';
 
 type SparkComposerProps = {
   visible: boolean;
@@ -31,6 +33,8 @@ type SparkComposerProps = {
     audio_title?: string | null;
     audio_artist?: string | null;
     audio_url?: string | null;
+    audio_start_time?: number | null;
+    audio_volume_balance?: { video: number; music: number } | null;
   }) => Promise<void> | void;
 };
 
@@ -59,9 +63,17 @@ export function SparkComposer({
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [selectedAudio, setSelectedAudio] = useState<SparkAudioSelection | null>(null);
   const [musicModalOpen, setMusicModalOpen] = useState(false);
+  const [previewPlaying, setPreviewPlaying] = useState(false);
+  const [videoVolumePct, setVideoVolumePct] = useState(DEFAULT_SPARK_VOLUME_BALANCE.video);
+  const [musicVolumePct, setMusicVolumePct] = useState(DEFAULT_SPARK_VOLUME_BALANCE.music);
+
+  const [pickingGallery, setPickingGallery] = useState(false);
+  const wasVisibleRef = useRef(false);
+  const loggedDetailsRef = useRef(false);
 
   useEffect(() => {
     if (!visible) {
+      wasVisibleRef.current = false;
       setStep('source');
       setSheetOpen(false);
       setCameraOpen(false);
@@ -74,12 +86,28 @@ export function SparkComposer({
       setSelectedProductId(null);
       setSelectedAudio(null);
       setMusicModalOpen(false);
+      setPreviewPlaying(false);
+      setVideoVolumePct(DEFAULT_SPARK_VOLUME_BALANCE.video);
+      setMusicVolumePct(DEFAULT_SPARK_VOLUME_BALANCE.music);
+      setPickingGallery(false);
+      loggedDetailsRef.current = false;
+      // #region agent log
+      agentDebugLog({hypothesisId:'H1',location:'SparkComposer.tsx:visibleFalse',message:'Composer hidden/reset',data:{shopId}});
+      // #endregion
       return;
     }
-    setLocation(defaultLocation);
-    setSheetOpen(true);
-    setStep('source');
-  }, [visible, defaultLocation]);
+    // Only reset to source sheet on open transition — not when defaultLocation changes mid-pick
+    if (!wasVisibleRef.current) {
+      wasVisibleRef.current = true;
+      loggedDetailsRef.current = false;
+      setLocation(defaultLocation);
+      setSheetOpen(true);
+      setStep('source');
+      // #region agent log
+      agentDebugLog({hypothesisId:'H1',location:'SparkComposer.tsx:visibleTrue',message:'Composer opened — source sheet should show',data:{shopId,defaultLocation,sheetOpenWillBe:true}});
+      // #endregion
+    }
+  }, [visible, defaultLocation, shopId]);
 
   useEffect(() => {
     if (!visible || !shopId) {
@@ -101,40 +129,137 @@ export function SparkComposer({
   }, [media]);
 
   const pickFromGallery = async () => {
+    if (pickingGallery) return;
+    setPickingGallery(true);
     try {
       if (Platform.OS !== 'web') {
-        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        const current = await ImagePicker.getMediaLibraryPermissionsAsync();
+        let status = current.status;
+        const canAskAgain = (current as { canAskAgain?: boolean }).canAskAgain !== false;
+        // #region agent log
+        agentDebugLog({hypothesisId:'H6',location:'SparkComposer.tsx:galleryPerm',message:'Gallery permission status',data:{status,canAskAgain},runId:'post-fix'});
+        // #endregion
+
+        // Permanently denied — requesting again hangs / no-ops on Android; send user to Settings
+        if (status !== 'granted' && !canAskAgain) {
+          // #region agent log
+          agentDebugLog({hypothesisId:'H6',location:'SparkComposer.tsx:galleryPermBlocked',message:'Gallery permission permanently denied',data:{status,canAskAgain:false},runId:'post-fix'});
+          // #endregion
+          Alert.alert(
+            'Photo library blocked',
+            'Vedastya cannot access your videos. Enable Photos / Media permission in Settings, or record a Moment with the camera instead.',
+            [
+              { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+              { text: 'Use Camera', style: 'default', onPress: () => {
+                setCameraMode('video');
+                setCameraOpen(true);
+                setStep('capture');
+              } },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          );
+          setSheetOpen(true);
+          setStep('source');
+          return;
+        }
+
         if (status !== 'granted') {
-          Alert.alert('Permission needed', 'Allow photo library access to choose media.');
+          const requested = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          status = requested.status;
+          // #region agent log
+          agentDebugLog({hypothesisId:'H6',location:'SparkComposer.tsx:galleryPermRequested',message:'Gallery permission after request',data:{status},runId:'post-fix'});
+          // #endregion
+        }
+        if (status !== 'granted') {
+          Alert.alert(
+            'Photo library access needed',
+            'Allow Vedastya to access your videos so you can upload a Moment from your gallery, or record with the camera instead.',
+            [
+              { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+              { text: 'OK', style: 'cancel' },
+            ],
+          );
+          setSheetOpen(true);
+          setStep('source');
           return;
         }
       }
+
+      // #region agent log
+      agentDebugLog({hypothesisId:'H7',location:'SparkComposer.tsx:galleryLaunch',message:'launchImageLibraryAsync starting',data:{platform:Platform.OS,allowsEditing:false},runId:'post-fix'});
+      // #endregion
+      await persistAgentDebugLogs();
+      // Prefer All on Android — Videos-only picker hangs / fails in some Expo Go builds
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        quality: 0.85,
-        allowsEditing: true,
+        mediaTypes: Platform.OS === 'android'
+          ? ImagePicker.MediaTypeOptions.All
+          : ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: false,
+        quality: 0.8,
         videoMaxDuration: 60,
       });
+
+      // #region agent log
+      agentDebugLog({hypothesisId:'H7',location:'SparkComposer.tsx:galleryResult',message:'launchImageLibraryAsync returned',data:{canceled:!!result.canceled,assetCount:result.assets?.length??0,assetType:result.assets?.[0]?.type??null},runId:'post-fix'});
+      // #endregion
+      void flushAgentDebugLogs();
+
       if (result.canceled || !result.assets[0]) {
-        if (!media) onClose();
+        setSheetOpen(true);
+        setStep('source');
         return;
       }
+
       const asset = result.assets[0];
+      const isVideo = asset.type === 'video' || /\.(mp4|mov|m4v|webm)(\?|$)/i.test(asset.uri);
+      if (!isVideo) {
+        Alert.alert(
+          'Video required',
+          'Moments need a short video clip (not a photo). Pick a video from your gallery, or use Record Video.',
+        );
+        setSheetOpen(true);
+        setStep('source');
+        return;
+      }
       const next: CapturedMedia = {
         uri: asset.uri,
-        type: asset.type === 'video' ? 'video' : 'image',
+        type: 'video',
         durationMs: asset.duration ? asset.duration * 1000 : undefined,
       };
       setMedia(next);
       if (next.durationMs) setTrimEnd(Math.min(15, Math.round(next.durationMs / 1000)));
+      setSheetOpen(false);
+      setCameraOpen(false);
       setStep('details');
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: 'H12',
+        location: 'SparkComposer.tsx:detailsAfterGallery',
+        message: 'Advanced to details after gallery pick (overlay)',
+        data: { hasDuration: !!next.durationMs, uriScheme: next.uri.split(':')[0] ?? null },
+        runId: 'post-fix',
+      });
+      // #endregion
+      void flushAgentDebugLogs();
     } catch (e: any) {
-      Alert.alert('Gallery error', e?.message || 'Could not open gallery.');
-      if (!media) onClose();
+      // #region agent log
+      agentDebugLog({hypothesisId:'H7',location:'SparkComposer.tsx:galleryError',message:'gallery picker threw',data:{errorMessage:e?.message??String(e)},runId:'post-fix'});
+      // #endregion
+      Alert.alert(
+        'Could not open gallery',
+        e?.message || 'Please try again, or record a Moment with the camera instead.',
+      );
+      setSheetOpen(true);
+      setStep('source');
+    } finally {
+      setPickingGallery(false);
     }
   };
 
   const onSourceSelect = (choice: 'camera' | 'gallery' | 'record') => {
+    // #region agent log
+    agentDebugLog({hypothesisId:'H13',location:'SparkComposer.tsx:onSourceSelect',message:'Source choice selected',data:{choice},runId:'post-fix'});
+    // #endregion
     setSheetOpen(false);
     if (choice === 'gallery') {
       void pickFromGallery();
@@ -150,11 +275,33 @@ export function SparkComposer({
     setMedia(captured);
     if (captured.durationMs) setTrimEnd(Math.min(15, Math.round(captured.durationMs / 1000)));
     setStep('details');
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'H12',
+      location: 'SparkComposer.tsx:detailsAfterCamera',
+      message: 'Advanced to details after camera capture (in-shell)',
+      data: { type: captured.type },
+      runId: 'post-fix',
+    });
+    // #endregion
+  };
+
+  useEffect(() => {
+    setSelectedAudio(prev => (prev ? { ...prev, audio_start_time: trimStart } : prev));
+  }, [trimStart]);
+
+  const handleSelectAudio = (audio: SparkAudioSelection) => {
+    setSelectedAudio({
+      ...audio,
+      audio_start_time: trimStart,
+      audio_volume_balance: { video: videoVolumePct, music: musicVolumePct },
+    });
+    setPreviewPlaying(true);
   };
 
   const publish = async () => {
     if (!media) {
-      Alert.alert('Add media', 'Record or choose a video/photo for your Spark.');
+      Alert.alert('Add media', 'Record or choose a video/photo for your Moment.');
       return;
     }
     const tagList = tags.trim().split(/[\s,]+/).filter(Boolean).map(t => t.replace(/^#/, ''));
@@ -169,51 +316,68 @@ export function SparkComposer({
       audio_title: selectedAudio?.audio_title ?? null,
       audio_artist: selectedAudio?.audio_artist ?? null,
       audio_url: selectedAudio?.audio_url ?? null,
+      audio_start_time: selectedAudio?.audio_start_time ?? trimStart,
+      audio_volume_balance: { video: videoVolumePct, music: musicVolumePct },
     });
   };
 
   const handleClose = () => {
+    // #region agent log
+    agentDebugLog({hypothesisId:'H3',location:'SparkComposer.tsx:handleClose',message:'Composer handleClose called',data:{posting,step,sheetOpen,cameraOpen,hasMedia:!!media}});
+    // #endregion
     if (posting) return;
     setCameraOpen(false);
     setSheetOpen(false);
     onClose();
   };
 
+  // #region agent log
+  if (visible && step === 'details' && media && !loggedDetailsRef.current) {
+    loggedDetailsRef.current = true;
+    agentDebugLog({
+      hypothesisId: 'H12',
+      location: 'SparkComposer.tsx:detailsRender',
+      message: 'Details overlay rendering',
+      data: { mediaType: media.type, posting },
+      runId: 'post-fix',
+    });
+  }
+  // #endregion
+
   return (
     <>
+      {/* Native Modal for source — embedded View sheet was not receiving taps on Android */}
       <MediaSourceSheet
-        visible={visible && sheetOpen && !cameraOpen && step === 'source'}
-        title="Create Spark"
+        visible={!!visible && sheetOpen && !cameraOpen && step === 'source'}
+        title="Create Moment"
         allowRecord
         onClose={handleClose}
         onSelect={onSourceSelect}
       />
 
-      <CameraCapture
-        visible={visible && cameraOpen}
-        mode={cameraMode}
-        onClose={() => {
-          setCameraOpen(false);
-          if (!media) handleClose();
-          else setStep('details');
-        }}
-        onCapture={onCaptured}
-      />
+      {visible && step === 'source' && !sheetOpen && pickingGallery ? (
+        <View style={s.overlay} pointerEvents="auto">
+          <View style={s.backdrop}>
+            <View style={s.sheet}>
+              <View style={s.handle} />
+              <ActivityIndicator color={Colors.orange} style={{ marginVertical: 28 }} />
+              <Text style={[s.title, { marginBottom: 24 }]}>Opening gallery…</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
 
-      <Modal
-        transparent
-        visible={visible && step === 'details' && !!media && !cameraOpen}
-        animationType="slide"
-        onRequestClose={handleClose}
-      >
-        <View style={s.backdrop}>
+      {/* Details as View overlay — avoids 2nd Modal after ImagePicker on Android */}
+      {visible && step === 'details' && !!media && !cameraOpen ? (
+        <View style={s.overlay} pointerEvents="auto" accessibilityViewIsModal>
+          <View style={s.backdrop}>
           <View style={s.sheet}>
             <View style={s.handle} />
             <View style={s.headerRow}>
               <TouchableOpacity onPress={handleClose} disabled={posting}>
                 <Text style={s.cancel}>Cancel</Text>
               </TouchableOpacity>
-              <Text style={s.title}>Create Spark</Text>
+              <Text style={s.title}>Create Moment</Text>
               <TouchableOpacity onPress={() => { setSheetOpen(true); setStep('source'); }} disabled={posting}>
                 <Text style={s.retake}>Retake</Text>
               </TouchableOpacity>
@@ -222,9 +386,30 @@ export function SparkComposer({
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={s.preview}>
                 {media?.type === 'video' ? (
-                  <FeedVideo uri={media.uri} active muted loop style={s.previewMedia} />
+                  <FeedVideo
+                    uri={media.uri}
+                    active={previewPlaying}
+                    muted={false}
+                    loop
+                    backgroundAudioUrl={selectedAudio?.audio_url}
+                    audioStartTime={trimStart}
+                    videoVolumePct={videoVolumePct}
+                    musicVolumePct={musicVolumePct}
+                    style={s.previewMedia}
+                  />
                 ) : media ? (
                   <Image source={{ uri: media.uri }} style={s.previewMedia} resizeMode="cover" />
+                ) : null}
+                {media?.type === 'video' ? (
+                  <TouchableOpacity
+                    style={s.previewPlayBtn}
+                    onPress={() => setPreviewPlaying(p => !p)}
+                    activeOpacity={0.88}
+                  >
+                    <Text style={s.previewPlayBtnText}>
+                      {previewPlaying ? '⏸ Pause preview' : '▶️ Play preview'}
+                    </Text>
+                  </TouchableOpacity>
                 ) : null}
                 <View style={s.previewBadge}>
                   <Text style={s.previewBadgeText}>
@@ -272,6 +457,27 @@ export function SparkComposer({
                 </View>
               ) : null}
 
+              {media?.type === 'video' && selectedAudio?.audio_url ? (
+                <View style={s.mixerCard}>
+                  <Text style={s.sectionLabel}>Audio mix</Text>
+                  <VolumeMixerRow
+                    label="Original video sound"
+                    value={videoVolumePct}
+                    onChange={setVideoVolumePct}
+                    disabled={posting}
+                  />
+                  <VolumeMixerRow
+                    label="Background music"
+                    value={musicVolumePct}
+                    onChange={setMusicVolumePct}
+                    disabled={posting}
+                  />
+                  <Text style={s.trimNote}>
+                    Preview plays video and music together. Video sound is ducked when music is attached.
+                  </Text>
+                </View>
+              ) : null}
+
               <Text style={s.sectionLabel}>Caption</Text>
               <TextInput
                 value={caption}
@@ -308,7 +514,7 @@ export function SparkComposer({
                     <Text style={s.audioBannerTitle} numberOfLines={1}>
                       {selectedAudio.audio_title} • {selectedAudio.audio_artist}
                     </Text>
-                    <Text style={s.audioBannerSub}>Attached to this Spark</Text>
+                    <Text style={s.audioBannerSub}>Attached to this Moment</Text>
                   </View>
                   <TouchableOpacity
                     onPress={() => setSelectedAudio(null)}
@@ -364,7 +570,7 @@ export function SparkComposer({
                   ))}
                 </ScrollView>
               ) : (
-                <Text style={s.productEmpty}>Add products to your shop to tag them in Sparks.</Text>
+                <Text style={s.productEmpty}>Add products to your shop to tag them in Moments.</Text>
               )}
 
               <TouchableOpacity
@@ -374,27 +580,80 @@ export function SparkComposer({
               >
                 {posting
                   ? <ActivityIndicator color={Colors.white} />
-                  : <Text style={s.publishText}>Publish Spark</Text>}
+                  : <Text style={s.publishText}>Publish Moment</Text>}
               </TouchableOpacity>
               <Pressable onPress={() => { setSheetOpen(true); setStep('source'); }} style={s.changeMedia}>
                 <Text style={s.changeMediaText}>Choose different media</Text>
               </Pressable>
             </ScrollView>
           </View>
+          </View>
         </View>
-      </Modal>
+      ) : null}
+
+      <CameraCapture
+        visible={!!visible && cameraOpen}
+        mode={cameraMode}
+        onClose={() => {
+          setCameraOpen(false);
+          if (!media) handleClose();
+          else setStep('details');
+        }}
+        onCapture={onCaptured}
+      />
 
       <MusicSelectorModal
         visible={musicModalOpen}
         cityHint={location || defaultLocation}
+        trimStartSec={trimStart}
         onClose={() => setMusicModalOpen(false)}
-        onSelect={setSelectedAudio}
+        onSelect={handleSelectAudio}
       />
     </>
   );
 }
 
-const s = StyleSheet.create({
+function VolumeMixerRow({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: number;
+  onChange: (next: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <View style={s.mixerRow}>
+      <Text style={s.mixerLabel}>{label}</Text>
+      <View style={s.mixerControls}>
+        <TouchableOpacity
+          style={s.mixerBtn}
+          disabled={disabled}
+          onPress={() => onChange(clampVolumePct(value - 10))}
+        >
+          <Text style={s.mixerBtnText}>−</Text>
+        </TouchableOpacity>
+        <Text style={s.mixerValue}>{value}%</Text>
+        <TouchableOpacity
+          style={s.mixerBtn}
+          disabled={disabled}
+          onPress={() => onChange(clampVolumePct(value + 10))}
+        >
+          <Text style={s.mixerBtnText}>+</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const s = createDynamicStyles((Colors) => ({
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1000,
+    elevation: 1000,
+  },
   backdrop: { flex: 1, backgroundColor: '#000B', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: Colors.surface,
@@ -438,6 +697,69 @@ const s = StyleSheet.create({
     marginBottom: 14,
   },
   previewMedia: { width: '100%', height: '100%' },
+  previewPlayBtn: {
+    position: 'absolute',
+    top: '44%',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: Radius.full,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    zIndex: 3,
+  },
+  previewPlayBtnText: {
+    color: Colors.white,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  mixerCard: {
+    backgroundColor: Colors.card,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    padding: 12,
+    marginBottom: 12,
+    gap: 8,
+  },
+  mixerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  mixerLabel: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  mixerControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mixerBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.bg,
+    borderWidth: 1,
+    borderColor: Colors.border2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mixerBtnText: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  mixerValue: {
+    minWidth: 42,
+    textAlign: 'center',
+    color: Colors.orange,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   previewBadge: {
     position: 'absolute',
     left: 10,
@@ -584,4 +906,4 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-});
+}));

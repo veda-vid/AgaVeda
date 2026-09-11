@@ -12,8 +12,34 @@ import {
   unfollowShop,
   getNotifications,
   markNotificationsRead,
+  updateProfile,
 } from '../lib/api';
-import type { Profile, Notification } from '../types';
+import { withTimeout } from '../lib/withTimeout';
+import { BOOT_TIMEOUT_MS } from '../lib/bootGuards';
+import type { Profile, Notification, UserRole } from '../types';
+
+const VALID_ROLES: UserRole[] = ['buyer', 'seller', 'service_provider', 'super_admin'];
+
+function normalizeUserRole(value?: string | null): UserRole | null {
+  if (!value || !VALID_ROLES.includes(value as UserRole)) return null;
+  return value as UserRole;
+}
+
+/** Keep service_provider / seller roles chosen at registration when the DB row is still default buyer. */
+async function preserveProfileRole(profile: Profile, roleHint?: string | null): Promise<Profile> {
+  const hinted = normalizeUserRole(roleHint);
+  if (!hinted || hinted === profile.role) return profile;
+  if (profile.role === 'super_admin') return profile;
+  if (profile.role !== 'buyer') return profile;
+  if (hinted !== 'service_provider' && hinted !== 'seller') return profile;
+
+  try {
+    const updated = await updateProfile(profile.id, { role: hinted });
+    return updated as Profile;
+  } catch {
+    return { ...profile, role: hinted };
+  }
+}
 
 interface AuthStore {
   profile: Profile | null;
@@ -24,12 +50,13 @@ interface AuthStore {
   dbNotifications: Notification[];
 
   initialize: () => Promise<void>;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: (roleHint?: string) => Promise<void>;
   updateProfile: (updates: Partial<Profile>) => void;
   applyLocationSetup: (updates: Partial<Profile>) => void;
   loadFollows: (userId: string) => Promise<void>;
   toggleFollowedShop: (shopId: string, shopName?: string) => Promise<void>;
   loadNotifications: (userId: string) => Promise<void>;
+  setPushNotificationsEnabled: (enabled: boolean) => Promise<void>;
   addNotification: (message: string) => void;
   clearNotifications: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -53,7 +80,11 @@ async function loadUserExtras(userId: string, set: (partial: Partial<AuthStore>)
   });
 }
 
-async function applySession(userId: string | undefined, set: (partial: Partial<AuthStore>) => void) {
+async function applySession(
+  userId: string | undefined,
+  set: (partial: Partial<AuthStore>) => void,
+  roleHint?: string | null,
+) {
   if (!userId) {
     set({
       profile: null,
@@ -66,7 +97,18 @@ async function applySession(userId: string | undefined, set: (partial: Partial<A
     return;
   }
   try {
-    const profile = await getProfile(userId);
+    let profile = await withTimeout(getProfile(userId), BOOT_TIMEOUT_MS, 'getProfile');
+    if (!isDemoAuthEnabled()) {
+      const { data: { session } } = await withTimeout(
+        getSupabase().auth.getSession(),
+        BOOT_TIMEOUT_MS,
+        'auth.getSession',
+      );
+      const metaRole = roleHint ?? session?.user?.user_metadata?.role ?? null;
+      profile = await preserveProfileRole(profile, metaRole);
+    } else if (roleHint) {
+      profile = await preserveProfileRole(profile, roleHint);
+    }
     // #region agent log
     fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-debug',hypothesisId:'H2',location:'stores/authStore.ts:applySession:profileLoaded',message:'auth profile loaded',data:{role:profile?.role ?? null,hasCity:!!profile?.city,hasLatLng:profile?.lat != null && profile?.lng != null,lat:profile?.lat ?? null,lng:profile?.lng ?? null,radius_km:profile?.radius_km ?? null,hasAvatarUrl:!!profile?.avatar_url},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
@@ -98,16 +140,19 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   initialize: async () => {
     if (get().isInitialized && authListenerAttached) return;
     set({ isLoading: true });
-    // #region agent log
-    fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:start',message:'auth initialize called',data:{isInitialized:get().isInitialized,authListenerAttached},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+
+    // Hard boot guard — never leave the launch screen hung on auth/network.
+    const bootGuard = setTimeout(() => {
+      if (!get().isInitialized) {
+        console.warn('[auth] Boot timeout reached — continuing without a resolved session.');
+        set({ isLoading: false, isInitialized: true });
+      }
+    }, BOOT_TIMEOUT_MS);
+
     try {
       if (isDemoAuthEnabled()) {
         authListenerAttached = true;
-        const { data } = await getAuthSession();
-        // #region agent log
-        fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:demoAuthSession',message:'demo auth session fetched',data:{hasSession:!!data?.session,hasUser:!!data?.session?.user},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
+        const { data } = await withTimeout(getAuthSession(), BOOT_TIMEOUT_MS, 'getAuthSession');
         await applySession(data.session?.user?.id, set);
         return;
       }
@@ -117,28 +162,36 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         authListenerAttached = true;
         supabase.auth.onAuthStateChange((event, session) => {
           if (event === 'INITIAL_SESSION') return;
-          applySession(session?.user?.id, set);
+          applySession(session?.user?.id, set).catch(() => {
+            set({ isLoading: false, isInitialized: true });
+          });
         });
       }
 
-      const { data: { session } } = await supabase.auth.getSession();
-      // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:getSession',message:'supabase session fetched',data:{hasSession:!!session,hasUser:!!session?.user,roleHint:session?.user?.user_metadata?.role ?? null},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+      const { data: { session } } = await withTimeout(
+        supabase.auth.getSession(),
+        BOOT_TIMEOUT_MS,
+        'supabase.auth.getSession',
+      );
       await applySession(session?.user?.id, set);
-    } catch {
-      // #region agent log
-      fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'094a50'},body:JSON.stringify({sessionId:'094a50',runId:'auth-init-debug',hypothesisId:'H6',location:'stores/authStore.ts:initialize:catch',message:'auth initialize threw',data:{},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+    } catch (error) {
+      console.warn('[auth] Initialization failed — opening app with cached / empty session.', error);
       set({ isLoading: false, isInitialized: true });
+    } finally {
+      clearTimeout(bootGuard);
+      if (!get().isInitialized) {
+        set({ isLoading: false, isInitialized: true });
+      }
     }
   },
 
-  refreshProfile: async () => {
+  refreshProfile: async (roleHint?: string) => {
     const { data } = await getAuthSession();
     const userId = data.session?.user?.id;
     if (!userId) return;
-    const profile = await getProfile(userId);
+    let profile = await getProfile(userId);
+    const metaRole = roleHint ?? data.session?.user?.user_metadata?.role ?? null;
+    profile = await preserveProfileRole(profile, metaRole);
     // #region agent log
     fetch('http://127.0.0.1:7596/ingest/b546de14-4b7f-47d5-b143-061715fc5430',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'10da03'},body:JSON.stringify({sessionId:'10da03',runId:'auth-profile-debug',hypothesisId:'H5',location:'stores/authStore.ts:118',message:'profile refreshed explicitly',data:{role:profile.role,hasAvatarUrl:!!profile.avatar_url,hasCity:!!profile.city},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
@@ -198,6 +251,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     set({
       dbNotifications: notes,
       notifications: notes.map(n => `${n.title}: ${n.body}`),
+    });
+  },
+
+  setPushNotificationsEnabled: async (enabled) => {
+    const { profile } = get();
+    if (!profile || isDemoAuthEnabled()) return;
+    const { syncPushPreference } = await import('../lib/pushPreferences');
+    await syncPushPreference(profile.id, enabled);
+    set({
+      profile: { ...profile, push_enabled: enabled },
     });
   },
 

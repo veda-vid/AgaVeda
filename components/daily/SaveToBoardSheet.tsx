@@ -5,7 +5,7 @@ import {
   Modal, View, Text, TextInput, TouchableOpacity, StyleSheet,
   ScrollView, Image, ActivityIndicator, Platform,
 } from 'react-native';
-import { Colors, Fonts, Radius } from '../../constants/theme';
+import { Colors, Fonts, Radius, createDynamicStyles } from '../../constants/theme';
 import { useDailyBoardsStore } from '../../stores/dailyBoardsStore';
 import type { CityNews } from '../../types';
 
@@ -133,7 +133,7 @@ export function SaveToBoardSheet({ visible, userId, item, onClose, onSaved }: Pr
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   backdrop: {
     flex: 1,
     backgroundColor: '#00000099',
@@ -195,4 +195,4 @@ const s = StyleSheet.create({
   },
   primaryText: { color: Colors.white, fontWeight: '800' },
   cancelText: { color: Colors.dim, textAlign: 'center', fontWeight: '600', paddingVertical: 8 },
-});
+}));

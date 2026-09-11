@@ -1,7 +1,7 @@
 // components/daily/DynamicNewsVisual.tsx — Gradient / pattern fallback when no feature image
 
 import { View, Text, StyleSheet } from 'react-native';
-import { Colors, Fonts } from '../../constants/theme';
+import { Colors, Fonts, createDynamicStyles } from '../../constants/theme';
 import type { CityNewsCategory } from '../../types';
 
 const PALETTES: Record<CityNewsCategory | 'spark', [string, string, string]> = {
@@ -58,7 +58,7 @@ export function DynamicNewsVisual({ category, title, badgeLabel, isVideo }: Prop
   );
 }
 
-const s = StyleSheet.create({
+const s = createDynamicStyles((Colors) => ({
   root: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
@@ -114,4 +114,4 @@ const s = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1,
   },
-});
+}));

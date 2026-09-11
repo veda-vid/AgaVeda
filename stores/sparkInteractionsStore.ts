@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import Toast from 'react-native-toast-message';
 import {
-  toggleSparkLike, toggleSparkRepost,
+  toggleSparkLike, toggleSparkRepost, unrepostSpark,
 } from '../lib/api';
 import { hapticLight } from '../lib/haptics';
 import type { SparkHydrationSeed } from '../lib/sparkUtils';
@@ -16,6 +16,7 @@ export type SparkInteractionState = {
   commentCount: number;
   repostCount: number;
   isFollowing: boolean;
+  quoteCaption?: string | null;
 };
 
 const DEFAULT_INTERACTION: SparkInteractionState = {
@@ -25,6 +26,7 @@ const DEFAULT_INTERACTION: SparkInteractionState = {
   commentCount: 0,
   repostCount: 0,
   isFollowing: false,
+  quoteCaption: null,
 };
 
 type SparkInteractionsStore = {
@@ -36,6 +38,8 @@ type SparkInteractionsStore = {
   getInteraction: (sparkId: string, seed?: Partial<SparkHydrationSeed>) => SparkInteractionState;
   toggleLike: (sparkId: string, userId: string | undefined) => Promise<void>;
   toggleRepost: (sparkId: string, userId: string | undefined, shopId: string) => Promise<void>;
+  quoteRepost: (sparkId: string, userId: string | undefined, shopId: string, quote: string) => Promise<void>;
+  unrepost: (sparkId: string, userId: string | undefined) => Promise<void>;
   bumpCommentCount: (sparkId: string, delta?: number) => void;
   setFollowing: (sparkId: string, following: boolean) => void;
   reset: () => void;
@@ -106,7 +110,7 @@ export const useSparkInteractionsStore = create<SparkInteractionsStore>((set, ge
 
   toggleLike: async (sparkId, userId) => {
     if (!userId) {
-      showSparkError('Sign in to like Sparks.');
+      showSparkError('Sign in to like Moments.');
       return;
     }
     const prev = get().getInteraction(sparkId);
@@ -144,7 +148,7 @@ export const useSparkInteractionsStore = create<SparkInteractionsStore>((set, ge
 
   toggleRepost: async (sparkId, userId, shopId) => {
     if (!userId) {
-      showSparkError('Sign in to repost Sparks.');
+      showSparkError('Sign in to repost Moments.');
       return;
     }
     const prev = get().getInteraction(sparkId);
@@ -156,13 +160,18 @@ export const useSparkInteractionsStore = create<SparkInteractionsStore>((set, ge
       dirtyIds: { ...state.dirtyIds, [sparkId]: true },
       byId: {
         ...state.byId,
-        [sparkId]: { ...prev, isReposted: nextReposted, repostCount: nextCount },
+        [sparkId]: {
+          ...prev,
+          isReposted: nextReposted,
+          repostCount: nextCount,
+          quoteCaption: nextReposted ? prev.quoteCaption : null,
+        },
       },
       version: state.version + 1,
     }));
 
     try {
-      await toggleSparkRepost(userId, sparkId, shopId, nextReposted);
+      await toggleSparkRepost(userId, sparkId, shopId, nextReposted, null);
       set(state => {
         const { [sparkId]: _omit, ...dirtyIds } = state.dirtyIds;
         return { dirtyIds, version: state.version + 1 };
@@ -178,6 +187,86 @@ export const useSparkInteractionsStore = create<SparkInteractionsStore>((set, ge
         };
       });
       showSparkError(e?.message || 'Could not update repost. Please try again.');
+      throw e;
+    }
+  },
+
+  quoteRepost: async (sparkId, userId, shopId, quote) => {
+    if (!userId) {
+      showSparkError('Sign in to repost Moments.');
+      return;
+    }
+    const prev = get().getInteraction(sparkId);
+    const nextCount = prev.isReposted ? prev.repostCount : prev.repostCount + 1;
+    hapticLight();
+    set(state => ({
+      dirtyIds: { ...state.dirtyIds, [sparkId]: true },
+      byId: {
+        ...state.byId,
+        [sparkId]: { ...prev, isReposted: true, repostCount: nextCount, quoteCaption: quote },
+      },
+      version: state.version + 1,
+    }));
+    try {
+      await toggleSparkRepost(userId, sparkId, shopId, true, quote);
+      set(state => {
+        const { [sparkId]: _omit, ...dirtyIds } = state.dirtyIds;
+        return { dirtyIds, version: state.version + 1 };
+      });
+      useProfileMediaStore.getState().invalidateUserReposts();
+    } catch (e: any) {
+      set(state => {
+        const { [sparkId]: _omit, ...dirtyIds } = state.dirtyIds;
+        return {
+          dirtyIds,
+          byId: { ...state.byId, [sparkId]: prev },
+          version: state.version + 1,
+        };
+      });
+      showSparkError(e?.message || 'Could not quote repost. Please try again.');
+      throw e;
+    }
+  },
+
+  unrepost: async (sparkId, userId) => {
+    if (!userId) {
+      showSparkError('Sign in to manage Moments.');
+      return;
+    }
+    const prev = get().getInteraction(sparkId);
+    if (!prev.isReposted) return;
+    hapticLight();
+    set(state => ({
+      dirtyIds: { ...state.dirtyIds, [sparkId]: true },
+      byId: {
+        ...state.byId,
+        [sparkId]: {
+          ...prev,
+          isReposted: false,
+          repostCount: Math.max(0, prev.repostCount - 1),
+          quoteCaption: null,
+        },
+      },
+      version: state.version + 1,
+    }));
+    try {
+      await unrepostSpark(userId, sparkId);
+      set(state => {
+        const { [sparkId]: _omit, ...dirtyIds } = state.dirtyIds;
+        return { dirtyIds, version: state.version + 1 };
+      });
+      useProfileMediaStore.getState().invalidateUserReposts();
+    } catch (e: any) {
+      set(state => {
+        const { [sparkId]: _omit, ...dirtyIds } = state.dirtyIds;
+        return {
+          dirtyIds,
+          byId: { ...state.byId, [sparkId]: prev },
+          version: state.version + 1,
+        };
+      });
+      showSparkError(e?.message || 'Could not undo repost. Please try again.');
+      throw e;
     }
   },
 
